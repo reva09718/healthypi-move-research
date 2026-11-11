@@ -232,7 +232,11 @@ def main(argv=None):
     p.add_argument("--pricing", default=str(C.ROOT / "cloud" / "pricing.json"))
     p.add_argument("--out", help="directory for benchmark.json / benchmark.md")
     p.add_argument("--bucket"); p.add_argument("--table"); p.add_argument("--region")
-    p.add_argument("--kms-key-id"); p.add_argument("--prefix", default="hpi-benchmark")
+    p.add_argument("--kms-key-id")
+    # Must sit inside the template's ObjectPrefix (default hpi-research): the uploader IAM policy
+    # only allows <ObjectPrefix>/*, so a top-level "hpi-benchmark/" prefix would be denied.
+    p.add_argument("--prefix", default="hpi-research/benchmark",
+                   help="S3 prefix for benchmark objects (default hpi-research/benchmark)")
     a = p.parse_args(argv)
     seconds = int(a.hours * 3600)
     if seconds < 1:

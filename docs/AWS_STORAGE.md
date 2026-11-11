@@ -14,7 +14,9 @@ recording. The measured comparison (S7) must still be produced on real AWS: see
 | Recorder GUI: "Upload to AWS while recording (hybrid)", Upload / Verify buttons | `pc_tools/research_app.py` |
 | Local vs cloud vs hybrid benchmark and cost model | `pc_tools/storage_benchmark.py`, `cloud/pricing.json` |
 | AWS infrastructure (private bucket, table, KMS option, least-privilege policy) | `cloud/template.yaml` (passes `cfn-lint`) |
-| 20 offline tests | `pc_tools/test_cloud.py` |
+| 22 offline tests | `pc_tools/test_cloud.py` |
+| Duration/gap/interruption report for exported sessions | `pc_tools/session_report.py` |
+| Step-by-step real-AWS and long-recording procedure | `docs/WALKTHROUGH.md` |
 
 ## Architecture
 

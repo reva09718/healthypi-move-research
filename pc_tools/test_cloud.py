@@ -256,6 +256,27 @@ class CloudTests(unittest.TestCase):
         sync.cloud.export_csv(self.sid, b)
         self.assertEqual(a.read_text(), b.read_text())
 
+    def test_access_denied_on_missing_object_is_reported_not_raised(self):
+        """Least-privilege IAM can turn a missing key into 403; verify must still report, not crash."""
+        from botocore.exceptions import ClientError
+
+        class DenyingS3(FlakyS3):
+            def get_object(self, **kw):
+                raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject")
+        cloud = C.CloudStore(self.cfg, s3=DenyingS3(self.s3), table=boto3.resource("dynamodb").Table(TABLE))
+        report = cloud.verify_session(self.sid)
+        self.assertFalse(report["ok"])
+        self.assertIn("AccessDenied", report["problems"][0])
+
+    def test_benchmark_prefix_is_inside_template_object_prefix(self):
+        import re
+        import storage_benchmark
+        template = (C.ROOT / "cloud" / "template.yaml").read_text()
+        object_prefix = re.search(r"ObjectPrefix:\s*\n\s*Type: String\s*\n\s*Default: (\S+)", template).group(1)
+        source = Path(storage_benchmark.__file__).read_text()
+        parser_prefix = re.search(r'"--prefix", default="([^"]+)"', source).group(1)
+        self.assertTrue(parser_prefix.startswith(object_prefix + "/"), parser_prefix)
+
     def test_hybrid_uploader_background_thread(self):
         notes = []
         cfg, db, cipher, s3 = self.cfg, self.db, self.cipher, self.s3

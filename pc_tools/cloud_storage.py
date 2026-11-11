@@ -347,11 +347,23 @@ class CloudStore:
         return manifest
 
     # ---- download / verify
-    def read_manifest(self, sid):
+    def _get_required(self, key, missing_message):
+        """GET an object that must exist. With the least-privilege policy in cloud/template.yaml
+        S3 may answer a missing key with 403 AccessDenied instead of 404 (s3:ListBucket is
+        prefix-conditioned), so both are reported as missing rather than crashing."""
+        from botocore.exceptions import ClientError
         try:
-            return json.loads(self._get(self._key(sid, "manifest.json")))
-        except self.s3.exceptions.NoSuchKey:
-            raise CloudIntegrityError("No complete manifest for session %s (upload unfinished?)" % sid) from None
+            return self._get(key)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404", "NotFound", "AccessDenied", "403"):
+                raise CloudIntegrityError("%s (S3 said %s)" % (missing_message, code)) from None
+            raise
+
+    def read_manifest(self, sid):
+        return json.loads(self._get_required(
+            self._key(sid, "manifest.json"),
+            "No complete manifest for session %s (upload unfinished, or no read permission?)" % sid))
 
     def _cipher_for(self, manifest, sid):
         if manifest.get("format") != FORMAT or manifest.get("session_id") != sid:
@@ -369,10 +381,7 @@ class CloudStore:
         cipher = self._cipher_for(manifest, sid)
         previous, total = -1, 0
         for chunk in manifest["chunks"]:
-            try:
-                blob = self._get(self._key(sid, chunk["object"]))
-            except self.s3.exceptions.NoSuchKey:
-                raise CloudIntegrityError("Missing chunk %s" % chunk["object"]) from None
+            blob = self._get_required(self._key(sid, chunk["object"]), "Missing chunk %s" % chunk["object"])
             if hashlib.sha256(blob).hexdigest() != chunk["sha256"]:
                 raise CloudIntegrityError("Chunk %s hash does not match the manifest" % chunk["object"])
             plain = gzip.decompress(cipher.decrypt(blob, _aad(sid, chunk["index"])))
@@ -398,7 +407,7 @@ class CloudStore:
         sid = _check_sid(sid)
         manifest = self.read_manifest(sid)
         cipher = self._cipher_for(manifest, sid)
-        blob = self._get(self._key(sid, "meta.bin"))
+        blob = self._get_required(self._key(sid, "meta.bin"), "Missing meta.bin")
         if hashlib.sha256(blob).hexdigest() != manifest["meta_sha256"]:
             raise CloudIntegrityError("meta.bin does not match the manifest")
         return json.loads(cipher.decrypt(blob, _aad(sid, "meta")))

@@ -137,7 +137,7 @@ been integrated with the new research protocol or the extra PPG channels.
 | Finger PPG recording validation | Pending |
 | Continuous 3–5+ hour collection and storage | Not demonstrated |
 | Raw accelerometer/gyroscope live streaming | Not added by these changes |
-| AWS storage, hybrid mode, encryption for upload | Implemented; 20 offline tests with mocked AWS; real-AWS run pending |
+| AWS storage, hybrid mode, encryption for upload | Implemented; 22 offline tests with mocked AWS; real-AWS run pending ([`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md)) |
 | Local vs cloud vs hybrid comparison (measured) | Benchmark tool ready; real-AWS measurements and final recommendation pending |
 
 Build evidence is in [`docs/builds/`](docs/builds/). Automated tests and a
