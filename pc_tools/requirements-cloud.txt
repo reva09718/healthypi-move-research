@@ -1,0 +1,6 @@
+# Optional AWS storage (S5/S6/S7). Install with:
+#   python -m pip install -r pc_tools/requirements-cloud.txt
+boto3>=1.34,<2
+cryptography>=42
+# Tests only (mock AWS in-process, no account needed):
+moto[s3,dynamodb,kms]>=5,<6

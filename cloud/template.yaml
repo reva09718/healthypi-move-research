@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  HealthyPi Move research storage: private encrypted S3 bucket for session chunks, DynamoDB
+  session index, and a least-privilege IAM policy for the recording laptop. Review before use.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Globally unique S3 bucket name (lowercase letters, digits, hyphens).
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+  TableName:
+    Type: String
+    Default: hpi-research-sessions
+  ObjectPrefix:
+    Type: String
+    Default: hpi-research
+    Description: Must match HPI_S3_PREFIX on the laptop.
+  CreateKmsKey:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      "true" creates a customer-managed KMS key: S3 uses it for SSE-KMS and the laptop uses it for
+      per-session data keys (set HPI_KMS_KEY_ID to the KmsKeyId output). "false" uses SSE-S3 and the
+      laptop's local key file.
+  ArchiveAfterDays:
+    Type: Number
+    Default: 90
+    MinValue: 90
+    Description: Days before chunks move to the Glacier Instant Retrieval storage class.
+
+Conditions:
+  UseKms: !Equals [!Ref CreateKmsKey, "true"]
+
+Resources:
+  DataKey:
+    Type: AWS::KMS::Key
+    Condition: UseKms
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: HealthyPi Move research data key
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: !If [UseKms, true, !Ref "AWS::NoValue"]
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: !If [UseKms, "aws:kms", "AES256"]
+              KMSMasterKeyID: !If [UseKms, !GetAtt DataKey.Arn, !Ref "AWS::NoValue"]
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: archive-old-chunks
+            Status: Enabled
+            Prefix: !Sub "${ObjectPrefix}/"
+            Transitions:
+              - StorageClass: GLACIER_IR
+                TransitionInDays: !Ref ArchiveAfterDays
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Sub "${Bucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+          - Sid: DenyOldTls
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Sub "${Bucket.Arn}/*"
+            Condition:
+              NumericLessThan:
+                "s3:TlsVersion": 1.2
+
+  SessionTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  UploaderPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Least-privilege access for the HealthyPi Move recording laptop. Attach to the IAM user/role (or SSO permission set) used by pc_tools/cloud_sync.py.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ListOwnPrefix
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt Bucket.Arn
+            Condition:
+              StringLike:
+                "s3:prefix": [!Sub "${ObjectPrefix}/*", !Sub "${ObjectPrefix}/"]
+          - Sid: ReadWriteChunks
+            Effect: Allow
+            Action: [s3:PutObject, s3:GetObject]
+            Resource: !Sub "${Bucket.Arn}/${ObjectPrefix}/*"
+          - Sid: SessionIndex
+            Effect: Allow
+            Action: [dynamodb:PutItem, dynamodb:GetItem, dynamodb:UpdateItem, dynamodb:Scan]
+            Resource: !GetAtt SessionTable.Arn
+          - !If
+            - UseKms
+            - Sid: DataKeys
+              Effect: Allow
+              Action: [kms:GenerateDataKey, kms:Decrypt]
+              Resource: !GetAtt DataKey.Arn
+            - !Ref "AWS::NoValue"
+
+Outputs:
+  BucketName:
+    Value: !Ref Bucket
+    Description: Set HPI_S3_BUCKET to this.
+  TableName:
+    Value: !Ref SessionTable
+    Description: Set HPI_DDB_TABLE to this.
+  KmsKeyId:
+    Condition: UseKms
+    Value: !Ref DataKey
+    Description: Set HPI_KMS_KEY_ID to this.
+  UploaderPolicyArn:
+    Value: !Ref UploaderPolicy
+    Description: Attach to the laptop's IAM identity.

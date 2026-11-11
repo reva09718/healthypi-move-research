@@ -1,0 +1,15 @@
+{
+  "_comment": "Checked against the official AWS Price List API (https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/<AmazonS3|AmazonDynamoDB|awskms|AWSDataTransfer>/current/<region>/index.json) on 2026-11-11. On-demand list prices in USD, first pricing tier (S3 Standard first 50 TB; DynamoDB storage beyond the 25 GB free tier; data transfer out beyond the 100 GB/month global free tier). Free tiers are not subtracted. Used by pc_tools/storage_benchmark.py; re-check before quoting and update verified_on.",
+  "region": "us-east-1",
+  "verified_on": "2026-11-11",
+  "s3_storage_gb_month": 0.023,
+  "s3_put_per_1000": 0.005,
+  "s3_get_per_1000": 0.0004,
+  "ddb_write_per_million": 0.625,
+  "ddb_read_per_million": 0.125,
+  "ddb_storage_gb_month": 0.25,
+  "kms_request_per_10000": 0.03,
+  "kms_key_month": 1.0,
+  "data_transfer_in_per_gb": 0.0,
+  "data_transfer_out_per_gb": 0.09
+}

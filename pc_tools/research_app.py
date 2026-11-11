@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import math
 from pathlib import Path
 import queue
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -13,6 +14,11 @@ from matplotlib.figure import Figure
 import hpi_ble as H
 from research_capture import Capture
 from research_storage import SessionStore
+
+try:  # optional AWS storage; the recorder works without it
+    import cloud_storage as CLOUD
+except ImportError:
+    CLOUD = None
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = ROOT / "data" / "research_sessions.db"
@@ -27,6 +33,8 @@ class ResearchApp:
         self.capture = None
         self.closing = False
         self.session_id = None
+        self.uploader = None
+        self.cloud_msgs = queue.SimpleQueue()
         self.buffers = {key: deque(maxlen=6000) for key in LABELS}
         self.latest = {}
         self.last_received = {}
@@ -66,6 +74,11 @@ class ResearchApp:
         self.duration_entry.pack(side="left", padx=6)
         self.demo_check = ttk.Checkbutton(options, text="DEMO - synthetic data", variable=self.mode)
         self.demo_check.pack(side="left", padx=14)
+        self.auto_cloud = tk.BooleanVar(value=False)
+        self.cloud_check = ttk.Checkbutton(options, text="Upload to AWS while recording (hybrid)",
+                                           variable=self.auto_cloud,
+                                           state="normal" if CLOUD else "disabled")
+        self.cloud_check.pack(side="left", padx=14)
         ttk.Label(options, text="Note:").pack(side="left")
         self.note_entry = ttk.Entry(options, textvariable=self.note, width=28)
         self.note_entry.pack(side="left", padx=6)
@@ -108,7 +121,8 @@ class ResearchApp:
                   wraplength=1050).pack(anchor="w", pady=4)
 
         ttk.Label(library, text="Sample values and raw packets are encrypted using your Windows account (DPAPI).\n"
-                  "Session metadata remains readable. Explicit CSV exports are plaintext.").pack(anchor="w", pady=8)
+                  "Session metadata remains readable. Explicit CSV exports are plaintext.\n"
+                  "AWS upload is off unless you tick the hybrid option or press Upload; the local copy is always kept.").pack(anchor="w", pady=8)
         self.sessions = ttk.Treeview(library, columns=("time", "status", "source"), show="headings", height=10)
         for key, label in [("time", "Started (local time)"), ("status", "Ending"), ("source", "Source")]:
             self.sessions.heading(key, text=label)
@@ -120,11 +134,17 @@ class ResearchApp:
         self.refresh_button.pack(side="left")
         self.export_button = ttk.Button(buttons, text="Export selected session as plaintext CSV", command=self.export)
         self.export_button.pack(side="left", padx=8)
+        self.upload_button = ttk.Button(buttons, text="Upload selected session to AWS", command=self.upload_selected,
+                                        state="normal" if CLOUD else "disabled")
+        self.upload_button.pack(side="left", padx=8)
+        self.verify_button = ttk.Button(buttons, text="Verify selected in AWS", command=self.verify_selected,
+                                        state="normal" if CLOUD else "disabled")
+        self.verify_button.pack(side="left")
         ttk.Label(library, text=str(DATABASE), wraplength=1000).pack(anchor="w")
 
         self.messages = tk.Text(body, height=4, state="disabled", wrap="word")
         self.messages.pack(fill="x", pady=(8, 0))
-        self.log("No data is uploaded. Existing recordings.db is left unchanged.")
+        self.log("Nothing is uploaded unless AWS upload is requested. Existing recordings.db is left unchanged.")
         self.refresh()
         root.after(200, self.poll)
 
@@ -140,7 +160,8 @@ class ResearchApp:
     def busy(self, active):
         state = "disabled" if active else "normal"
         for widget in self.checks + [self.start_button, self.duration_entry, self.note_entry,
-                                     self.demo_check, self.export_button, self.refresh_button]:
+                                     self.demo_check, self.cloud_check, self.export_button,
+                                     self.refresh_button]:
             widget.configure(state=state)
         self.stop_button.configure(state="normal" if active else "disabled")
 
@@ -213,6 +234,74 @@ class ResearchApp:
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
 
+    # ---- AWS (optional). Network work runs in daemon threads; the local database stays the master copy.
+    def cloud_sync_factory(self):
+        if CLOUD is None:
+            raise RuntimeError("Install cloud dependencies: python -m pip install -r pc_tools/requirements-cloud.txt")
+        cfg = CLOUD.CloudConfig.load()  # raises CloudConfigError with a readable message
+        from research_storage import WindowsCipher
+        return cfg, lambda: CLOUD.CloudSync.from_config(cfg, DATABASE, WindowsCipher())
+
+    def start_hybrid(self, sid):
+        try:
+            _, make = self.cloud_sync_factory()
+        except Exception as exc:
+            self.log("AWS upload not started: %s. Recording continues locally." % exc)
+            return
+        self.uploader = CLOUD.HybridUploader(make, sid, notify=self.cloud_msgs.put).start()
+        self.log("Hybrid mode: saved locally first, uploaded to AWS in the background.")
+
+    def _cloud_job(self, label, job):
+        def run():
+            try:
+                self.cloud_msgs.put(job())
+            except Exception as exc:
+                self.cloud_msgs.put("%s failed: %s" % (label, exc))
+        threading.Thread(target=run, name="hpi-cloud-" + label, daemon=True).start()
+
+    def upload_selected(self):
+        chosen = self.sessions.selection()
+        if not chosen:
+            messagebox.showinfo("Select a session", "Select a saved session first.")
+            return
+        sid = chosen[0]
+        try:
+            _, make = self.cloud_sync_factory()
+        except Exception as exc:
+            messagebox.showerror("AWS not configured", str(exc))
+            return
+        final = not (self.capture and sid == self.session_id)  # also finalise sessions left 'recording' by a crash
+
+        def job():
+            sync = make()
+            try:
+                r = sync.sync_session(sid, final=final)
+            finally:
+                sync.close()
+            return ("AWS upload complete: " + sid) if r["complete"] else \
+                   ("AWS upload incomplete (%s); press Upload again to resume." % (r["error"] or "session still recording"))
+        self.log("Uploading " + sid + " ...")
+        self._cloud_job("upload", job)
+
+    def verify_selected(self):
+        chosen = self.sessions.selection()
+        if not chosen:
+            messagebox.showinfo("Select a session", "Select a saved session first.")
+            return
+        sid = chosen[0]
+        try:
+            cfg, _ = self.cloud_sync_factory()
+        except Exception as exc:
+            messagebox.showerror("AWS not configured", str(exc))
+            return
+
+        def job():
+            report = CLOUD.CloudStore(cfg).verify_session(sid)
+            return ("AWS verify OK: %d packets in %d chunks" % (report["packets"], report["chunks"])) if report["ok"] \
+                   else "AWS verify FAILED: " + "; ".join(report["problems"])
+        self.log("Verifying " + sid + " in AWS (downloads and decrypts it) ...")
+        self._cloud_job("verify", job)
+
     def update_packet(self, packet):
         key = packet["signal"]
         self.last_received[key] = packet["recv_utc"]
@@ -251,6 +340,8 @@ class ResearchApp:
                 if kind == "session":
                     self.session_id = value
                     self.log("Session " + value)
+                    if self.auto_cloud.get():
+                        self.start_hybrid(value)
                 elif kind == "status":
                     self.status.set(value)
                 elif kind == "notice":
@@ -268,6 +359,10 @@ class ResearchApp:
                     if absent:
                         self.log("No readings received for: " + ", ".join(absent))
                     self.count_text.set("Saved samples: " + str(value["counts"]))
+                    if self.uploader:
+                        self.uploader.finish()  # background thread uploads the rest; local copy is already safe
+                        self.uploader = None
+                        self.log("Finishing AWS upload in the background...")
                     self.status.set("Saved: " + value["status"] +
                                     (" (contains interruptions)" if "gaps" in value["status"] else
                                      " (partial recording)" if value["status"] in ("disconnected", "error") else ""))
@@ -277,6 +372,11 @@ class ResearchApp:
                     # Thread can still be returning; wait for actual termination.
             if cap.thread is not None and not cap.thread.is_alive():
                 self.capture = None
+        while True:
+            try:
+                self.log(self.cloud_msgs.get_nowait())
+            except queue.Empty:
+                break
         self.redraw()
         if self.closing and self.capture is None:
             self.root.destroy()

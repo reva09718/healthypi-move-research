@@ -82,7 +82,8 @@ Data saved before a disconnect is retained.
 Open **Saved sessions**, select a session, and choose **Export selected session as
 plaintext CSV**. Exports contain host timing labels, packet/sample indices and one
 row per received sample. The encrypted source is retained. CSV exports are intentionally
-readable and are not encrypted. Nothing is uploaded to AWS.
+readable and are not encrypted. Nothing is uploaded to AWS unless the optional AWS storage in
+`docs/AWS_STORAGE.md` is used.
 
 ## Demonstration and checks
 

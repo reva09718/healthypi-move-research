@@ -71,7 +71,8 @@ the preceding PPG-only release.
 |---|---|
 | [`fw/`](fw/) | Firmware source, research control/status/data service, protocol codec and tests |
 | [`app/`](app/) | Flutter companion app and additional live PPG displays |
-| [`pc_tools/`](pc_tools/) | BLE scan/capture, encrypted research recorder, SQLite/CSV and signal analysis |
+| [`pc_tools/`](pc_tools/) | BLE scan/capture, encrypted research recorder, SQLite/CSV and signal analysis, AWS upload and storage benchmark |
+| [`cloud/`](cloud/) | CloudFormation template (S3, DynamoDB, optional KMS, IAM policy) and benchmark price inputs |
 | [`docs/`](docs/) | BLE specification, laptop implementation notes, source inventory and build reports |
 | [`patches/`](patches/) | App and firmware changes relative to the recorded upstream commits |
 | [`setup_nordic.ps1`](setup_nordic.ps1) | Windows Nordic SDK installation/build helper; external tooling and local signing keys are required |
@@ -111,6 +112,15 @@ the preceding PPG-only release.
 - Windows-user DPAPI encryption of packet contents in SQLite and plaintext CSV
   export, plus signal-rate/gap/PPG validation tools.
 
+**AWS storage (laptop):**
+
+- Local-first hybrid mode, cloud-only upload and resumable sync: sessions are re-encrypted with
+  AES-256-GCM (local key file or AWS KMS), uploaded to S3 in authenticated chunks with a
+  DynamoDB session index, and can be verified and exported back to CSV.
+- Benchmark and cost model for comparing local, cloud and hybrid storage.
+- Details, security limits and setup: [`docs/AWS_STORAGE.md`](docs/AWS_STORAGE.md). Tested against
+  mocked AWS only.
+
 The laptop recorder still uses the original live BLE endpoints. Its GUI has not
 been integrated with the new research protocol or the extra PPG channels.
 
@@ -127,7 +137,8 @@ been integrated with the new research protocol or the extra PPG channels.
 | Finger PPG recording validation | Pending |
 | Continuous 3–5+ hour collection and storage | Not demonstrated |
 | Raw accelerometer/gyroscope live streaming | Not added by these changes |
-| AWS, hybrid storage and architecture comparison | Pending |
+| AWS storage, hybrid mode, encryption for upload | Implemented; 20 offline tests with mocked AWS; real-AWS run pending |
+| Local vs cloud vs hybrid comparison (measured) | Benchmark tool ready; real-AWS measurements and final recommendation pending |
 
 Build evidence is in [`docs/builds/`](docs/builds/). Automated tests and a
 successful build are not evidence of uninterrupted device recording. The custom
@@ -193,6 +204,10 @@ Run the compiled `wire_test` on the host to execute the encoder checks.
 python -m pip install -r pc_tools/requirements-research.txt
 python pc_tools/research_app.py
 ```
+
+Optional AWS storage: `python -m pip install -r pc_tools/requirements-cloud.txt`, then follow
+[`docs/AWS_STORAGE.md`](docs/AWS_STORAGE.md). Cloud tests (mocked AWS):
+`python -m unittest discover -s pc_tools -p test_cloud.py -v`.
 
 Windows DPAPI protects recorded packet contents using the current Windows user.
 Session metadata and exported CSVs are not all encrypted. Recordings are created
