@@ -1,12 +1,13 @@
 name: move
 description: "HealthyPi Move"
 publish_to: 'none'
-version: 3.0.12+100
+version: 3.0.13+101
 
 environment:
   sdk: ^3.7.0
 
 dependencies:
+  crypto: ^3.0.0
   flutter:
     sdk: flutter
 
@@ -51,6 +52,8 @@ dependencies:
       ref: v0.2.0
 
 dev_dependencies:
+  sqlite3: 2.9.4
+  sqflite_common_ffi: 2.3.7
   flutter_test:
     sdk: flutter
   build_runner: ^2.1.2
@@ -60,7 +63,6 @@ dev_dependencies:
   # Used by test/mcuboot_image_test.dart to show that the MCUboot image hash is
   # NOT sha256 of the file (transitive via mcumgr_dart; declared so the test may
   # import it directly).
-  crypto: ^3.0.0
 
 flutter:
   uses-material-design: true

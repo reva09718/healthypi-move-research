@@ -7,22 +7,22 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// Guards the privacy statement rendered by `ScrSettingsNew._privacyCard`.
 ///
-/// That card tells the user, as a plain assertion, that the app has no
-/// analytics and uploads nothing they measure. A claim like that is not a
-/// comment — it is the thing a privacy-conscious user decides on, and it stops
-/// being true the moment somebody adds a dependency without reading the
-/// Settings screen. These tests fail when that happens.
+/// The card describes optional hybrid uploads and explicit export, with no
+/// analytics. New network destinations must be documented alongside the code.
 ///
 /// A failure here is not "delete the test". It means the privacy card must be
 /// updated to match what the app now does, or the dependency reconsidered.
 void main() {
   final pubspec = File('pubspec.yaml').readAsStringSync();
 
-  /// Files allowed to reach the network, and what for. Both are stated on the
+  /// Files allowed to reach the network, and what for. These are stated on the
   /// card as the app's only outbound traffic.
   const networkAllowlist = <String>{
     // GitHub: watch firmware release metadata + the binary itself.
     'lib/utils/firmware_update_service.dart',
+    // Explicit optional account authentication and per-user hybrid backup.
+    'lib/recording/cloud_account.dart',
+    'lib/recording/cloud_upload.dart',
   };
 
   group('privacy claims in Settings', () {
@@ -66,8 +66,8 @@ void main() {
       }
       expect(offenders, isEmpty,
           reason: 'New network call site(s) outside the allowlist. The '
-              'Settings privacy card claims the app goes online only for '
-              'firmware and app-update checks — update it, or route this '
+              'Settings privacy card documents account/backup and '
+              'update checks — update it, or route this '
               'through an existing service.');
     });
 

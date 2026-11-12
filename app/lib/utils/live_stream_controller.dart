@@ -70,7 +70,12 @@ class ConnectedLiveTransport
 /// Serializes route changes so two PPG charts share one encrypted subscription.
 /// A generation guard drops late notifications and late pairing/subscription work.
 class LiveStreamController extends ChangeNotifier {
-  LiveStreamController(this.transport, {required this.onSamples});
+  LiveStreamController(
+    this.transport, {
+    required this.onSamples,
+    this.onRawPacket,
+  });
+  final void Function(Uint8List bytes)? onRawPacket;
   final LiveTransport transport;
   final void Function(LiveSignal signal, List<double> values, bool breakBefore)
   onSamples;
@@ -163,6 +168,7 @@ class LiveStreamController extends ChangeNotifier {
                 if (!_current(revision)) return;
                 try {
                   if (research) {
+                    onRawPacket?.call(bytes);
                     final packet = ResearchPacket.decode(bytes);
                     if (packet == null) return;
                     for (final signal in entry.value) {

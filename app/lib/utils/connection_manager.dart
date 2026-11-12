@@ -62,6 +62,13 @@ class ConnectionManager extends ChangeNotifier {
   Object? _smpToken;
 
   bool _streaming = false;
+  bool _recording = false;
+  void setRecording(bool active) {
+    if (_recording == active) return;
+    _recording = active;
+    notifyListeners();
+  }
+
   Set<String> _serviceUuids = {};
   bool hasService(String uuid) => _serviceUuids.contains(uuid.toLowerCase());
 
@@ -81,7 +88,7 @@ class ConnectionManager extends ChangeNotifier {
   /// not overlap on the wire, and a user-initiated sync at least happens with
   /// the user watching. An automatic one does not — so [AutoSyncController]
   /// consults this before starting, and the Live screen is the authority on it.
-  bool get isStreaming => _streaming;
+  bool get isStreaming => _streaming || _recording;
 
   /// Reported by the Live screen whenever its subscription set changes. Pass
   /// `subs.isNotEmpty` rather than toggling on each subscribe/unsubscribe, so a
@@ -107,6 +114,7 @@ class ConnectionManager extends ChangeNotifier {
   /// superseded session is ignored, so a late teardown can't free somebody
   /// else's lock.
   Object acquireSmp(String owner) {
+    if (_recording) throw SmpBusyException('research-recording', owner);
     final current = _smpOwner;
     if (current != null) throw SmpBusyException(current, owner);
     final token = Object();
@@ -140,8 +148,10 @@ class ConnectionManager extends ChangeNotifier {
   /// is dead. Called on disconnect and on an unexpected drop.
   void _forceReleaseSmp() {
     if (_smpOwner == null) return;
-    debugPrint('[ConnectionManager] link lost; force-releasing SMP lock held '
-        'by "$_smpOwner"');
+    debugPrint(
+      '[ConnectionManager] link lost; force-releasing SMP lock held '
+      'by "$_smpOwner"',
+    );
     _smpOwner = null;
     _smpToken = null;
   }
@@ -162,8 +172,10 @@ class ConnectionManager extends ChangeNotifier {
       // REQUIRED before any subscribe/write: CoreBluetooth (and Android GATT)
       // only expose characteristics after service discovery. Without this,
       // connect succeeds but notify/write silently fail.
-      _serviceUuids = (await _ble.discoverServiceUuids(deviceId))
-          .map((uuid) => uuid.toLowerCase()).toSet();
+      _serviceUuids =
+          (await _ble.discoverServiceUuids(
+            deviceId,
+          )).map((uuid) => uuid.toLowerCase()).toSet();
       await _connSub?.cancel();
       _connSub = _ble.connectionStream(deviceId).listen((connected) {
         if (!connected && !_intentional && _state == LinkState.connected) {
@@ -220,8 +232,12 @@ class ConnectionManager extends ChangeNotifier {
     if (id == null) {
       throw StateError('ConnectionManager: not connected');
     }
-    return _ble.subscribeStream(id, service, characteristic,
-        onSubscribeError: onSubscribeError);
+    return _ble.subscribeStream(
+      id,
+      service,
+      characteristic,
+      onSubscribeError: onSubscribeError,
+    );
   }
 
   Future<void> unsubscribe(String service, String characteristic) async {
@@ -230,12 +246,21 @@ class ConnectionManager extends ChangeNotifier {
   }
 
   /// Write a command/payload to a characteristic on the current link.
-  Future<void> write(String service, String characteristic, Uint8List value,
-      {bool withoutResponse = true}) async {
+  Future<void> write(
+    String service,
+    String characteristic,
+    Uint8List value, {
+    bool withoutResponse = true,
+  }) async {
     final id = _deviceId;
     if (id == null) throw StateError('ConnectionManager: not connected');
-    await _ble.write(id, service, characteristic, value,
-        withoutResponse: withoutResponse);
+    await _ble.write(
+      id,
+      service,
+      characteristic,
+      value,
+      withoutResponse: withoutResponse,
+    );
   }
 
   Future<Uint8List> read(String service, String characteristic) {

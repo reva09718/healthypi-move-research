@@ -22,6 +22,7 @@ import '../utils/device_manager.dart';
 import '../utils/healthy_store_client.dart';
 import '../utils/healthy_store_sync_manager.dart';
 import 'scr_developer.dart';
+import 'scr_research_recordings.dart';
 
 /// Settings (handoff 1i). A pushed route (no nav bar). Preference rows that
 /// aren't yet wired to real settings show their current value read-only,
@@ -350,6 +351,9 @@ class _ScrSettingsNewState extends State<ScrSettingsNew> {
             ]),
             const SizedBox(height: 20),
             const HpiSectionLabel('DATA'),
+            ListTile(leading: const Icon(Icons.save), title: const Text('Research recordings / AWS'),
+              subtitle: const Text('Encrypted local sessions, export and account setup'),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ScrResearchRecordings()))),
             HpiGroupedCard(rows: [
               HpiListRow(
                 icon: Symbols.sync,
@@ -454,22 +458,8 @@ class _ScrSettingsNewState extends State<ScrSettingsNew> {
     );
   }
 
-  /// Where the user's health data goes: nowhere.
-  ///
-  /// This replaces a "Cloud sync — Off" row, which read as a feature waiting to
-  /// be switched on. There is no backend, no account and no upload path in the
-  /// codebase, and none is planned, so framing it as a disabled toggle was
-  /// misleading in the one direction that matters for a health app. Stated as
-  /// what it is: a property of the product.
-  ///
-  /// **Every claim here is checked against the code, and must stay that way.**
-  /// The app has no analytics, crash-reporting or telemetry dependency of any
-  /// kind, and makes exactly two kinds of outbound request, neither carrying
-  /// user data: `FirmwareUpdateService` → GitHub, for watch firmware release
-  /// metadata and the binary itself; and `upgrader` → the platform app store,
-  /// for the latest app version behind `Upgrader.blocked`. If a third is ever
-  /// added, this card is part of that change — an inaccurate privacy claim is
-  /// worse than none.
+  /// Keep this statement aligned with optional Cognito/hybrid backup, explicit
+  /// plaintext export, and update-check network paths. No analytics is added.
   Widget _privacyCard() {
     return Container(
       padding: const EdgeInsets.all(14),
@@ -487,20 +477,22 @@ class _ScrSettingsNewState extends State<ScrSettingsNew> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Your health data stays on this phone',
+                Text('You control recording and sharing',
                     style: HpiText.cardTitle.copyWith(fontSize: 12.5)),
                 const SizedBox(height: 4),
                 Text(
-                  'No account, no cloud, no analytics. Nothing the watch '
-                  'measures is uploaded anywhere — it lives in this app until '
-                  'you export or delete it.',
+                  'No analytics. Research recordings are encrypted on this phone. '
+                  'Hybrid mode uploads those recordings and timestamps to your configured '
+                  'AWS account after you sign in. Local mode does not upload recordings. '
+                  'Exported files are unencrypted copies under your control.',
                   style: HpiText.body.copyWith(fontSize: 11.5, height: 1.45),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'The app goes online for two things only, and neither sends '
-                  'your data: checking GitHub for watch firmware, and checking '
-                  'the app store for app updates.',
+                  'The app also contacts Cognito for account sign-in, and AWS for '
+                  'hybrid backup; GitHub and the app store are used for update checks. '
+                  'AWS backups use TLS and server-side encryption. The AWS administrator '
+                  'can access backups. Existing Healthy Store history remains separate.',
                   style: HpiText.supporting.copyWith(fontSize: 10.5, height: 1.4),
                 ),
               ],

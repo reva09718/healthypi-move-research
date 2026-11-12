@@ -71,6 +71,9 @@ class CloudTests(unittest.TestCase):
         self.cipher = self.store.cipher
 
     def tearDown(self):
+        # unittest runs addCleanup AFTER tearDown; close SQLite readers before
+        # deleting their directory (Windows cannot unlink an open database).
+        self.doCleanups()
         self.store.close()
         self.temp.cleanup()
 
@@ -334,6 +337,7 @@ class KmsTests(unittest.TestCase):
             other = str(uuid.uuid4())
             with self.assertRaises(Exception):
                 C.KmsKeyProvider(kms).unwrap(manifest["key"], other)
+            sync.close()
             store.close()
 
 

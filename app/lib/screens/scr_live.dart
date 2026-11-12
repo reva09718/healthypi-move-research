@@ -16,6 +16,8 @@ import '../utils/connection_manager.dart';
 import '../utils/device_manager.dart';
 import '../utils/live_stream_controller.dart';
 import '../utils/research_session_controller.dart';
+import '../recording/recording_runtime.dart';
+import 'scr_research_recordings.dart';
 
 class ScrLive extends StatefulWidget {
   const ScrLive({
@@ -23,8 +25,10 @@ class ScrLive extends StatefulWidget {
     this.initialDevice,
     this.transport,
     this.active = true,
+    this.recordingRuntime,
   });
   final bool active;
+  final RecordingRuntime? recordingRuntime;
   final DeviceInfo? initialDevice;
   final LiveTransport? transport;
   @override
@@ -49,6 +53,70 @@ class _ScrLiveState extends State<ScrLive> {
   final _lastSample = <LiveSignal, DateTime>{};
   final _latest = <LiveSignal, double>{};
   Timer? _ticker;
+  late final _recording = widget.recordingRuntime ?? RecordingRuntime.instance;
+  bool _recordWasActive = false;
+  void _onRecording() {
+    final active = _recording.recorder.locked;
+    _cm.setRecording(active);
+    if (_recordWasActive != active) {
+      _recordWasActive = active;
+      if (mounted) _restart();
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _toggleRecording() async {
+    try {
+      if (_recording.recorder.active) {
+        await _recording.recorder.stop();
+        return;
+      }
+      await _recording.initialize();
+      if (!mounted) return;
+      final mode = await showDialog<String>(
+        context: context,
+        builder:
+            (ctx) => SimpleDialog(
+              title: const Text('Record incoming raw signals'),
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text(
+                    'Start your desired sensors first. Recording captures all arriving channels, including those not displayed. Sensor Start/Stop remains separate.',
+                  ),
+                ),
+                SimpleDialogOption(
+                  onPressed: () => Navigator.pop(ctx, 'local'),
+                  child: const Text('Local · encrypted on this phone'),
+                ),
+                SimpleDialogOption(
+                  onPressed:
+                      _recording.account.signedIn
+                          ? () => Navigator.pop(ctx, 'hybrid')
+                          : null,
+                  child: Text(
+                    _recording.account.signedIn
+                        ? 'Hybrid · local + queued AWS backup'
+                        : 'Hybrid needs AWS setup and sign-in in Saved recordings',
+                  ),
+                ),
+              ],
+            ),
+      );
+      if (mode == null) return;
+      if (!_connected || _cm.isSmpBusy || _feed?.isStreaming != true) {
+        throw StateError('Connect the watch and open live streams first.');
+      }
+      await _recording.recorder.start(_recording.account.owner, mode: mode);
+      _onControls();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
 
   bool get _connected =>
       widget.transport?.connected ??
@@ -58,6 +126,7 @@ class _ScrLiveState extends State<ScrLive> {
   @override
   void initState() {
     super.initState();
+    _recording.recorder.addListener(_onRecording);
     _cm.addListener(_onLink);
     DeviceManager.pairingRevision.addListener(_init);
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -78,6 +147,11 @@ class _ScrLiveState extends State<ScrLive> {
 
   @override
   void dispose() {
+    _recording.recorder.removeListener(_onRecording);
+    if (_recording.recorder.active) {
+      unawaited(_recording.recorder.stop(state: 'interrupted'));
+    }
+    _cm.setRecording(false);
     _cm.removeListener(_onLink);
     DeviceManager.pairingRevision.removeListener(_init);
     _ticker?.cancel();
@@ -115,6 +189,9 @@ class _ScrLiveState extends State<ScrLive> {
     // Streaming/SMP notifications also notify ConnectionManager listeners.
     // Only a real link transition should reconfigure subscriptions.
     final connected = _connected;
+    if (!connected && _recording.recorder.active) {
+      unawaited(_recording.recorder.stop(state: 'interrupted'));
+    }
     if (connected != _wasConnected || _cm.isSmpBusy != _wasSmpBusy) {
       _wasConnected = connected;
       _wasSmpBusy = _cm.isSmpBusy;
@@ -148,6 +225,7 @@ class _ScrLiveState extends State<ScrLive> {
               ? null
               : LiveStreamController(
                 _transport!,
+                onRawPacket: _recording.recorder.accept,
                 onSamples: (signal, values, breakBefore) {
                   if (!mounted || values.isEmpty) return;
                   final buffer = _buffer(signal);
@@ -181,7 +259,7 @@ class _ScrLiveState extends State<ScrLive> {
     }
     unawaited(
       _feed?.select(
-        !widget.active || _cm.isSmpBusy
+        (!widget.active && !_recording.recorder.locked) || _cm.isSmpBusy
             ? {}
             : _transport?.hasResearch == true
             ? LiveSignal.values.toSet()
@@ -191,7 +269,10 @@ class _ScrLiveState extends State<ScrLive> {
     );
     _controlLifecycle = _controlLifecycle.then((_) async {
       if (!mounted) return;
-      final enabled = widget.active && !_cm.isSmpBusy && _connected;
+      final enabled =
+          (widget.active || _recording.recorder.locked) &&
+          !_cm.isSmpBusy &&
+          _connected;
       if (enabled && force && _controls != null && !_controls!.ready) {
         final old = _controls!;
         _controls = null;
@@ -220,6 +301,16 @@ class _ScrLiveState extends State<ScrLive> {
   }
 
   void _onControls() {
+    final controls = _controls;
+    if (controls != null) {
+      _recording.recorder.status({
+        'active_mask': controls.activeMask,
+        'tx_failures': controls.txFailures,
+        'states': {
+          for (final e in controls.states.entries) e.key.name: e.value,
+        },
+      });
+    }
     if (mounted) setState(() {});
   }
 
@@ -492,6 +583,44 @@ class _ScrLiveState extends State<ScrLive> {
             if (!_connected)
               Expanded(child: _disconnected())
             else ...[
+              Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                children: [
+                  TextButton.icon(
+                    onPressed:
+                        _recording.recorder.starting ||
+                                _recording.recorder.stopping ||
+                                _cm.isSmpBusy ||
+                                _transport?.hasResearch != true
+                            ? null
+                            : _toggleRecording,
+                    icon: Icon(
+                      _recording.recorder.active
+                          ? Icons.stop_circle
+                          : Icons.fiber_manual_record,
+                      color: Colors.redAccent,
+                    ),
+                    label: Text(
+                      _recording.recorder.active ? 'Stop recording' : 'Record',
+                    ),
+                  ),
+                  TextButton(
+                    onPressed:
+                        () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const ScrResearchRecordings(),
+                          ),
+                        ),
+                    child: const Text('Saved / AWS'),
+                  ),
+                ],
+              ),
+              if (_recording.recorder.error != null)
+                Text(
+                  _recording.recorder.error!,
+                  style: const TextStyle(color: Colors.redAccent, fontSize: 11),
+                ),
               if (_controls != null) _sensorControls(),
               Expanded(child: _waveformCard(_primary)),
               if (_compare) ...[
@@ -500,9 +629,8 @@ class _ScrLiveState extends State<ScrLive> {
               ],
               const SizedBox(height: 10),
               Text(
-                'PPG is shown in raw counts with an adaptive scale. '
-                'Continuous mode runs until Stop. Keep this app foreground on Live; '
-                'leaving Live or disconnecting requests Stop. Live view does not save recordings.',
+                'Record saves all incoming channels across tabs and screen lock. '
+                'A BLE disconnect interrupts recording. Keep the watch nearby.',
                 style: HpiText.supporting,
               ),
             ],

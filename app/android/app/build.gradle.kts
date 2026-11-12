@@ -87,6 +87,10 @@ flutter {
     source = "../.."
 }
 
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
 // A release can compile with an empty generated registrant, but then native
 // BLE/preferences/database calls fail before the app opens. Fail the build.
 val verifyNativePluginRegistration by tasks.registering {
