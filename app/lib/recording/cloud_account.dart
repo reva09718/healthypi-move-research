@@ -10,12 +10,12 @@ class CloudConfig {
       client = json['clientId'] as String,
       api = (json['apiBaseUrl'] as String).replaceFirst(RegExp(r'/$'), '') {
     final uri = Uri.parse(api);
-    if (json['region'] != 'ap-southeast-1' ||
-        !RegExp(r'^ap-southeast-1_[A-Za-z0-9]+$').hasMatch(pool) ||
+    if (json['region'] != 'ap-southeast-2' ||
+        !RegExp(r'^ap-southeast-2_[A-Za-z0-9]+$').hasMatch(pool) ||
         !RegExp(r'^[a-z0-9]{10,128}$').hasMatch(client) ||
         uri.scheme != 'https' ||
         !RegExp(
-          r'^[a-z0-9]+\.execute-api\.ap-southeast-1\.amazonaws\.com$',
+          r'^[a-z0-9]+\.execute-api\.ap-southeast-2\.amazonaws\.com$',
         ).hasMatch(uri.host) ||
         uri.userInfo.isNotEmpty ||
         uri.hasQuery ||
@@ -23,13 +23,13 @@ class CloudConfig {
         uri.port != 443 ||
         (uri.path.isNotEmpty && uri.path != '/')) {
       throw const FormatException(
-        'Paste the Singapore mobile stack AppConfig output unchanged.',
+        'Paste the Sydney mobile stack AppConfig output unchanged.',
       );
     }
   }
   final String pool, client, api;
   Map<String, String> toJson() => {
-    'region': 'ap-southeast-1',
+    'region': 'ap-southeast-2',
     'userPoolId': pool,
     'clientId': client,
     'apiBaseUrl': api,
@@ -84,7 +84,7 @@ class CloudAccount extends ChangeNotifier {
     }
     final response = await client
         .post(
-          Uri.https('cognito-idp.ap-southeast-1.amazonaws.com', '/'),
+          Uri.https('cognito-idp.ap-southeast-2.amazonaws.com', '/'),
           headers: {
             'Content-Type': 'application/x-amz-json-1.1',
             'X-Amz-Target': 'AWSCognitoIdentityProviderService.$operation',

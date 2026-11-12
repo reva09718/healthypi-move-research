@@ -12,10 +12,10 @@ been validated as a complete system on a physical watch and phone.
 
 ## Phone recording and AWS backup release
 
-App **3.0.13+101** adds optional encrypted local recording, CSV/status export,
+App **3.0.14+102** adds optional encrypted local recording, CSV/status export,
 separate member sign-in, and local-first hybrid AWS backup. Keep firmware
 **3.1.4-imu**; no firmware change is needed for storage. Deploy the new mobile
-stack yourself in Singapore using CloudShell, then paste its AppConfig into
+stack yourself in Sydney using CloudShell, then paste its AppConfig into
 the app. See [phone recording and deployment instructions](docs/PHONE_RECORDING_AWS.md).
 The new mobile stack is separate from the supplied laptop AWS uploader stack.
 Real AWS deployment and a 3–5 hour watch/phone recording run remain pending.

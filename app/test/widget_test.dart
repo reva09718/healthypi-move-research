@@ -47,8 +47,8 @@ void main() {
     PackageInfo.setMockInitialValues(
       appName: 'Move',
       packageName: 'com.protocentral.move.research',
-      version: '3.0.13',
-      buildNumber: '101',
+      version: '3.0.14',
+      buildNumber: '102',
       buildSignature: 'test',
     );
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-REGION=ap-southeast-1
+REGION=ap-southeast-2
 STACK=healthypi-mobile
 read -r -p 'Comma-separated allowed project emails (your email and teammates): ' EMAILS
 if [[ -z "$EMAILS" ]]; then echo 'No emails entered; nothing deployed.'; exit 1; fi

@@ -1,8 +1,8 @@
-# Phone recording and AWS backup — app 3.0.13+101
+# Phone recording and AWS backup — app 3.0.14+102
 
 ## Install and record
 
-Install `HealthyPi_Move_Recording_AWS_3.0.13.apk` over the existing research app. Keep firmware **3.1.4-imu** for all 17 exposed research signal IDs. This update does not change or require reflashing that firmware. Android is the supported recording platform for this build; the Keystore/foreground service implementation is Android-specific.
+Install `HealthyPi_Move_Recording_AWS_Sydney_3.0.14.apk` over the existing research app. Keep firmware **3.1.4-imu** for all 17 exposed research signal IDs. This update does not change or require reflashing that firmware. Android is the supported recording platform for this build; the Keystore/foreground service implementation is Android-specific.
 
 1. Connect the watch and open **Live**. Use **Sensors / Start all** or individual sensor Start controls to choose what to acquire. Check contact and actual incoming data.
 2. Tap **Record**, then **Local**. Recording is optional and separate from sensor Start/Stop. It captures every arriving research-channel packet, including channels not displayed. It cannot capture a sensor that is not producing data.
@@ -25,27 +25,27 @@ New research recordings are separate from the app's older Healthy Store history 
 
 Hybrid uploads run after Stop and retry approximately every 30 seconds while the app process is running, with persisted exponential retry delays up to 30 minutes. **Retry queued AWS uploads** resets the delay. Opening Saved recordings restores the queue after an app restart. Uploads are not guaranteed while the app is force-stopped. A failed upload never deletes the local recording. Sessions are labelled Uploaded only after every chunk's checksum/size is confirmed by AWS and the manifest is finalized.
 
-## Deploy in Singapore yourself
+## Deploy in Sydney yourself
 
 No AWS credentials are embedded in the APK. Do not send access keys/passwords to anyone. Use the identity already available in AWS CloudShell.
 
-1. Select **Asia Pacific (Singapore), ap-southeast-1** in AWS. Open CloudShell.
-2. Upload `HealthyPi_Move_Mobile_AWS_Setup.zip` with CloudShell's Actions > Upload file.
+1. Select **Asia Pacific (Sydney), ap-southeast-2** in AWS. Open CloudShell.
+2. Upload `HealthyPi_Move_Mobile_AWS_Sydney_Setup.zip` with CloudShell's Actions > Upload file.
 3. Run:
 
 ```bash
-unzip HealthyPi_Move_Mobile_AWS_Setup.zip -d healthypi-mobile-setup
+unzip HealthyPi_Move_Mobile_AWS_Sydney_Setup.zip -d healthypi-mobile-setup
 cd healthypi-mobile-setup
 bash deploy.sh
 ```
 
-4. When prompted, enter comma-separated **your and teammates' email addresses**. Empty allowlists deny account creation. The script creates the `healthypi-mobile` CloudFormation stack in Singapore and prints **AppConfig JSON**.
+4. When prompted, enter comma-separated **your and teammates' email addresses**. Empty allowlists deny account creation. The script creates the `healthypi-mobile` CloudFormation stack in Sydney and prints **AppConfig JSON**.
 5. In the app, open **Saved / AWS > Account & AWS setup**, paste AppConfig, and Save. Each member chooses **Create account**, confirms the code sent to their email, then signs in. Passwords require 12+ characters including upper/lowercase, number and symbol. Forgot password/code reset is supported. Cognito email delivery and sandbox/service quotas must be checked in your account if confirmation emails fail.
 6. Start a **new Hybrid** recording. Stop it; confirm Uploaded in Saved recordings. Turn off internet for another session; confirm Queued and readable local export, then restore internet and Retry. Verify using a second account that the first account's local/session API records are inaccessible.
 
 To change the permitted team emails, run the deploy script again with the full desired list. Removing an email from signup does not revoke an existing user; disable that user in Cognito if required. Sign-out clears the phone's saved refresh token; it is a local sign-out, not global session revocation. Cloud administrators can disable accounts/revoke sessions in Cognito.
 
-AWS resources incur usage charges; this is not a free-service guarantee. S3 versioning/noncurrent version expiry, DynamoDB backups, Lambda/API requests and Cognito can affect costs. Set an AWS budget and inspect Singapore pricing for your actual data volume. Buckets/tables have **Retain** policies, so deleting the stack does not delete recordings or end all storage charges. Deliberate deletion of retained research data is an owner action.
+AWS resources incur usage charges; this is not a free-service guarantee. S3 versioning/noncurrent version expiry, DynamoDB backups, Lambda/API requests and Cognito can affect costs. Set an AWS budget and inspect Sydney pricing for your actual data volume. Buckets/tables have **Retain** policies, so deleting the stack does not delete recordings or end all storage charges. Deliberate deletion of retained research data is an owner action.
 
 ## Security and exact data contract
 
@@ -61,6 +61,6 @@ The supplied four laptop AWS patch commits are retained without rewriting their 
 
 ## Validation still needed on your devices/account
 
-Automated tests are offline/mocked and do not establish hardware runtime or real AWS configuration. After deployment: check email sign-up/sign-in/refresh, real presigned PUT + HeadObject checksum confirmation, unauthorized cross-user API requests, app restart retry, airplane mode retry, screen-lock collection and available storage. Collect and store **3–5 hours** of all usable signals with contact maintained, then compare saved counts, gaps, boot changes, exported values/timing and actual AWS objects. Capture battery, temperature, packet loss, local write/stop latency, cloud upload latency and actual Singapore usage costs for the project report. No 3–5h run or live AWS deployment is claimed by this code delivery.
+Automated tests are offline/mocked and do not establish hardware runtime or real AWS configuration. After deployment: check email sign-up/sign-in/refresh, real presigned PUT + HeadObject checksum confirmation, unauthorized cross-user API requests, app restart retry, airplane mode retry, screen-lock collection and available storage. Collect and store **3–5 hours** of all usable signals with contact maintained, then compare saved counts, gaps, boot changes, exported values/timing and actual AWS objects. Capture battery, temperature, packet loss, local write/stop latency, cloud upload latency and actual Sydney usage costs for the project report. No 3–5h run or live AWS deployment is claimed by this code delivery.
 
 Primary implementation references: [Android foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types), [API Gateway JWT authorizers](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-jwt-authorizer.html), [Cognito public authentication](https://docs.aws.amazon.com/cognito/latest/developerguide/authentication-flows-public-server-side.html), [S3 checksum uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html).

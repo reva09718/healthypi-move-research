@@ -374,7 +374,7 @@ class _AccountState extends State<ScrRecordingAccount> {
         Text(
           runtime.account.config == null
               ? 'AWS setup pending deployment'
-              : 'Singapore · ap-southeast-1',
+              : 'Sydney · ap-southeast-2',
         ),
         const Text(
           'Deploy the included mobile stack in AWS CloudShell, then paste its AppConfig output below. No AWS access keys or passwords are needed here. Local recording works without AWS.',

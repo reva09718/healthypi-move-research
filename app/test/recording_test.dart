@@ -82,10 +82,10 @@ class TestSecrets implements SecretStore {
 }
 
 const config = {
-  'region': 'ap-southeast-1',
-  'userPoolId': 'ap-southeast-1_test',
+  'region': 'ap-southeast-2',
+  'userPoolId': 'ap-southeast-2_test',
   'clientId': '1234567890abcdefghijkl',
-  'apiBaseUrl': 'https://abc123.execute-api.ap-southeast-1.amazonaws.com',
+  'apiBaseUrl': 'https://abc123.execute-api.ap-southeast-2.amazonaws.com',
 };
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -271,10 +271,10 @@ void main() {
       rec.dispose();
     },
   );
-  test('config only accepts Singapore public mobile endpoints', () {
+  test('config only accepts Sydney public mobile endpoints', () {
     expect(CloudConfig(config).api, config['apiBaseUrl']);
     for (final bad in [
-      'http://abc123.execute-api.ap-southeast-1.amazonaws.com',
+      'http://abc123.execute-api.ap-southeast-2.amazonaws.com',
       'https://example.com',
       'https://abc.execute-api.ap-south-1.amazonaws.com',
     ]) {
@@ -421,7 +421,7 @@ void main() {
           if (r.url.path.endsWith('/upload')) {
             return http.Response(
               jsonEncode({
-                'url': 'https://test.s3.ap-southeast-1.amazonaws.com/chunk',
+                'url': 'https://test.s3.ap-southeast-2.amazonaws.com/chunk',
                 'headers': {'Content-Type': 'application/gzip'},
               }),
               200,

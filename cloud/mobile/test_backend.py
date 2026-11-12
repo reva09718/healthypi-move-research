@@ -11,7 +11,7 @@ import boto3
 from moto import mock_aws
 import backend
 
-REGION='ap-southeast-1'
+REGION='ap-southeast-2'
 USER='00000000-0000-4000-8000-000000000001'
 OTHER='00000000-0000-4000-8000-000000000002'
 

@@ -92,7 +92,7 @@ class CloudUpload extends ChangeNotifier {
             final uri = Uri.parse(plan['url'] as String);
             if (uri.scheme != 'https' ||
                 !RegExp(
-                  r'(^|\.)s3[.-]ap-southeast-1\.amazonaws\.com$',
+                  r'(^|\.)s3[.-]ap-southeast-2\.amazonaws\.com$',
                 ).hasMatch(uri.host)) {
               throw StateError(
                 'Cloud returned an unexpected storage endpoint.',

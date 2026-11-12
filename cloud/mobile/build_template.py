@@ -66,9 +66,9 @@ resources = {
     'ApiPermission': {'Type':'AWS::Lambda::Permission','Properties':{'FunctionName':ref('Function'),'Action':'lambda:InvokeFunction',
         'Principal':'apigateway.amazonaws.com','SourceArn':sub('arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*')}}
 }
-template={'AWSTemplateFormatVersion':'2010-09-09','Description':'HealthyPi Move private mobile recording backup (Singapore)',
+template={'AWSTemplateFormatVersion':'2010-09-09','Description':'HealthyPi Move private mobile recording backup (Sydney)',
     'Parameters':{'AllowedSignupEmails':{'Type':'String','Default':'','Description':'Comma-separated project member emails. Empty denies all self-signups.'}},
-    'Rules':{'SingaporeOnly':{'Assertions':[{'Assert':{'Fn::Equals':[ref('AWS::Region'),'ap-southeast-1']},'AssertDescription':'Deploy in Singapore ap-southeast-1.'}]}},
+    'Rules':{'SydneyOnly':{'Assertions':[{'Assert':{'Fn::Equals':[ref('AWS::Region'),'ap-southeast-2']},'AssertDescription':'Deploy in Sydney ap-southeast-2.'}]}},
     'Resources':resources,'Outputs':{
         'AppConfig':{'Value':sub('{"region":"${AWS::Region}","userPoolId":"${UserPool}","clientId":"${Client}","apiBaseUrl":"https://${Api}.execute-api.${AWS::Region}.amazonaws.com"}')},
         'BucketName':{'Value':ref('Bucket')},'TableName':{'Value':ref('Table')}}}
