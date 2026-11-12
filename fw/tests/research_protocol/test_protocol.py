@@ -9,7 +9,7 @@ from research_protocol import command, decode_data, decode_status, Continuity
 
 class ProtocolTests(unittest.TestCase):
     def packet(self, index=0, boot=42, signal=1, values=(-12, 1000), millis=1000):
-        flags = 3 if signal in (1, 2, 6) else 1
+        flags = 3 if signal in (1, 2, 6) or signal >= 12 else 1
         return decode_data(struct.pack("<4BIII", 1, signal, flags, len(values), boot, index, millis) +
                            struct.pack("<" + ("i" if flags == 3 else "I") * len(values), *values))
 
@@ -74,7 +74,15 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.packet(signal=signal, values=(1, 2))
         with self.assertRaises(ValueError):
-            self.packet(signal=12, values=(1,))
+            self.packet(signal=18, values=(1,))
+
+    def test_imu_signed_axes_and_commands(self):
+        for signal in range(12, 18):
+            packet = self.packet(signal=signal, values=(-32768, 0, 32767))
+            self.assertEqual(packet['values'], [-32768, 0, 32767])
+            self.assertEqual(packet['nominal_hz'], 25)
+        self.assertEqual(command('continuous', 'accel', 2), bytes([1, 4, 5, 2]))
+        self.assertEqual(command('stop', 'gyro', 3), bytes([1, 2, 6, 3]))
 
     def test_ppg_rejects_signed_flag(self):
         for signal in (9, 10, 11):

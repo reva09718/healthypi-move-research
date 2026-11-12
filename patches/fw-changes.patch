@@ -4,10 +4,10 @@
  VERSION_MAJOR = 3
  VERSION_MINOR = 1
 -PATCHLEVEL = 0
-+PATCHLEVEL = 3
++PATCHLEVEL = 4
  VERSION_TWEAK = 0
 -EXTRAVERSION =
-+EXTRAVERSION = fingerfix
++EXTRAVERSION = imu
 --- a/app/src/ble_module.c
 +++ b/app/src/ble_module.c
 @@ -1,3 +1,4 @@
@@ -168,8 +168,119 @@
 +}
 +#endif
 --- /dev/null
++++ b/app/src/hpi_imu.c
+@@ -0,0 +1,98 @@
++/* SPDX-License-Identifier: MIT */
++#include <zephyr/kernel.h>
++#include <zephyr/device.h>
++#include <errno.h>
++#include "hpi_imu.h"
++#include "hpi_research.h"
++#include "hpi_dfu.h"
++#include "bmi323_hpi.h"
++
++/* Reuses the research control thread: no additional thread stack or workqueue.
++ * Sensors run at 50 Hz; snapshot polling emits nominal 25 Hz (not a FIFO log).
++ * Five samples/axis per packet keep BLE notification overhead bounded. */
++#define IMU_BATCH 5
++static const struct device *const imu = DEVICE_DT_GET(DT_NODELABEL(bmi323));
++static struct {
++    struct hpr_stamp stamp;
++    int32_t samples[3][IMU_BATCH];
++    uint8_t count;
++} batches[2];
++static uint8_t running, failures, error_mask;
++static int64_t next_sample;
++
++bool hpi_imu_active(void) { return running != 0; }
++
++static void flush(unsigned group)
++{
++    if (!batches[group].count) { return; }
++    uint8_t first = group ? HPR_GYRO_X : HPR_ACCEL_X;
++    for (unsigned axis = 0; axis < 3; ++axis) {
++        hpi_research_send(first + axis, &batches[group].stamp,
++                          batches[group].samples[axis], batches[group].count);
++    }
++    batches[group].count = 0;
++}
++
++void hpi_imu_request(uint8_t target, bool start)
++{
++    if (target < HPR_TARGET_ACCEL || target > HPR_TARGET_GYRO) { return; }
++    unsigned group = target - HPR_TARGET_ACCEL;
++    uint8_t bit = BIT(group);
++    if (start) {
++        if (running & bit) { return; }
++        /* No configuration was touched if the device never initialized. */
++        if (!device_is_ready(imu)) { hpi_research_state(target, HPR_ERROR); return; }
++        int ret = bmi323_hpi_research_start(imu, group == 1);
++        if (ret) {
++            if (group && bmi323_hpi_research_stop_gyro(imu)) {
++                running |= bit;
++                error_mask |= bit;
++                hpi_research_request_stop(target);
++            } else { hpi_research_state(target, HPR_ERROR); }
++            return;
++        }
++        if (!running) { next_sample = k_uptime_get(); failures = 0; }
++        batches[group].count = 0;
++        running |= bit;
++        /* Actual MEASURING is reported only after a successful sample read. */
++    } else {
++        if (group && bmi323_hpi_research_stop_gyro(imu)) { return; }
++        flush(group);
++        running &= ~bit;
++        hpi_research_state(target, (error_mask & bit) ? HPR_ERROR : HPR_CANCELLED);
++        error_mask &= ~bit;
++    }
++}
++
++void hpi_imu_poll(void)
++{
++    int64_t now = k_uptime_get();
++    if (!running || now < next_sample || hpi_dfu_is_active()) { return; }
++    /* Do not invent catch-up samples after scheduler/BLE delays. */
++    next_sample = now + 40;
++    int32_t axes[6];
++    if (bmi323_hpi_research_read(imu, axes)) {
++        if (++failures >= 3) {
++            for (unsigned group = 0; group < 2; ++group) {
++                if (running & BIT(group)) {
++                    error_mask |= BIT(group);
++                    hpi_research_request_stop(HPR_TARGET_ACCEL + group);
++                }
++            }
++        }
++        return;
++    }
++    failures = 0;
++    for (unsigned group = 0; group < 2; ++group) {
++        uint8_t target = HPR_TARGET_ACCEL + group;
++        if (!(running & BIT(group)) || hpi_research_stopping(target)) { continue; }
++        struct hpr_stamp stamp;
++        hpi_research_stamp(group ? HPR_GYRO_X : HPR_ACCEL_X, &stamp, 1);
++        if (!batches[group].count) { batches[group].stamp = stamp; }
++        for (unsigned axis = 0; axis < 3; ++axis) {
++            batches[group].samples[axis][batches[group].count] = axes[group * 3 + axis];
++        }
++        if (++batches[group].count == IMU_BATCH) { flush(group); }
++        hpi_research_state(target, HPR_MEASURING);
++    }
++}
+--- /dev/null
++++ b/app/src/hpi_imu.h
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: MIT */
++#pragma once
++#include <stdbool.h>
++#include <stdint.h>
++void hpi_imu_request(uint8_t target, bool start);
++void hpi_imu_poll(void);
++bool hpi_imu_active(void);
+--- /dev/null
 +++ b/app/src/hpi_research.c
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,331 @@
 +/* SPDX-License-Identifier: MIT
 + * Opt-in research service; legacy GATT payloads remain unchanged.
 + */
@@ -182,6 +293,7 @@
 +#include <errno.h>
 +#include <string.h>
 +#include "hpi_research.h"
++#include "hpi_imu.h"
 +#include "hpi_research_policy.h"
 +#include "hpi_evt.h"
 +#include "hpi_dfu.h"
@@ -191,7 +303,7 @@
 +
 +enum { CMD_START = 1, CMD_STOP = 2, CMD_STATUS = 3, CMD_CONTINUOUS = 4 };
 +enum { R_ACCEPTED, R_BUSY, R_INVALID, R_NOT_OWNER, R_UNSUPPORTED, R_DFU };
-+static atomic_t states[5];
++static atomic_t states[HPR_LAST_TARGET + 1];
 +static atomic_t indices[HPR_LAST_SIGNAL + 1];
 +static atomic_t remote_mask;
 +static atomic_t continuous_mask;
@@ -203,7 +315,8 @@
 +static uint8_t status_bytes[HPR_STATUS_SIZE];
 +/* Only the control thread dereferences/changes owner. */
 +static struct bt_conn *owner;
-+static int64_t pending_since[5];
++static uint8_t owner_targets;
++static int64_t pending_since[HPR_LAST_TARGET + 1];
 +struct request { struct bt_conn *conn; uint8_t bytes[4]; };
 +K_MSGQ_DEFINE(hpr_commands, sizeof(struct request), 4, sizeof(void *));
 +struct scalar_packet { struct hpr_stamp stamp; int32_t value; uint8_t signal; };
@@ -217,19 +330,19 @@
 +
 +bool hpi_research_continuous(uint8_t target)
 +{
-+    return target >= 1 && target <= 4 &&
++    return target >= 1 && target <= HPR_LAST_TARGET &&
 +           (atomic_get(&continuous_mask) & BIT(target - 1));
 +}
 +
 +bool hpi_research_stopping(uint8_t target)
 +{
-+    return target >= 1 && target <= 4 &&
++    return target >= 1 && target <= HPR_LAST_TARGET &&
 +           (atomic_get(&stop_mask) & BIT(target - 1));
 +}
 +
 +void hpi_research_state(uint8_t target, uint8_t state)
 +{
-+    if (target < 1 || target > 4) { return; }
++    if (target < 1 || target > HPR_LAST_TARGET) { return; }
 +    uint8_t old = (uint8_t)atomic_get(&states[target]);
 +    if (state == HPR_IDLE && old >= HPR_COMPLETE && old <= HPR_ERROR) { return; }
 +    if (state == HPR_IDLE && active(old)) {
@@ -247,7 +360,7 @@
 +
 +bool hpi_research_remote_owned(uint8_t target)
 +{
-+    return target >= 1 && target <= 4 &&
++    return target >= 1 && target <= HPR_LAST_TARGET &&
 +           (atomic_get(&remote_mask) & BIT(target - 1));
 +}
 +
@@ -255,6 +368,13 @@
 +{
 +    ARG_UNUSED(target);
 +    return atomic_get(&remote_mask) == 0;
++}
++
++void hpi_research_request_stop(uint8_t target)
++{
++    if (target < 1 || target > HPR_LAST_TARGET) { return; }
++    atomic_or(&stop_mask, BIT(target - 1));
++    atomic_set(&states[target], HPR_STOPPING);
 +}
 +
 +void hpi_research_finger_busy(bool busy) { atomic_set(&finger_busy, busy); }
@@ -298,7 +418,7 @@
 +    if (len != 4) { return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN); }
 +    const uint8_t *b = buf;
 +    if (b[0] != HPR_VERSION || b[1] < CMD_START || b[1] > CMD_CONTINUOUS ||
-+        b[2] > 4 || b[3] == 0 || (b[1] != CMD_STATUS && b[2] == 0)) {
++        b[2] > HPR_LAST_TARGET || b[3] == 0 || (b[1] != CMD_STATUS && b[2] == 0)) {
 +        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 +    }
 +    struct request req = {.conn = bt_conn_ref(conn)};
@@ -327,10 +447,10 @@
 +{
 +    uint8_t b[HPR_STATUS_SIZE] = {HPR_VERSION, request_id, opcode, target, result};
 +    b[5] = target ? (uint8_t)atomic_get(&states[target]) : HPR_IDLE;
-+    for (uint8_t i = 1; i <= 4; ++i) {
++    for (uint8_t i = 1; i <= HPR_LAST_TARGET; ++i) {
 +        if (active((uint8_t)atomic_get(&states[i]))) { b[6] |= BIT(i - 1); }
 +    }
-+    b[7] = HPR_FLAG_TIME_ESTIMATED | HPR_CAP_CONTINUOUS;
++    b[7] = HPR_FLAG_TIME_ESTIMATED | HPR_CAP_CONTINUOUS | HPR_CAP_IMU;
 +    hpr_put32(b + 8, boot_id);
 +    hpr_put32(b + 12, k_uptime_get_32());
 +    hpr_put32(b + 16, (uint32_t)atomic_get(&tx_failures));
@@ -347,6 +467,7 @@
 +{
 +    /* Continuous ECG/BioZ is reconciled by its owning SMF thread. */
 +    if (target <= HPR_GSR && hpi_research_continuous(target)) { return; }
++    if (target >= HPR_TARGET_ACCEL) { hpi_imu_request(target, start); return; }
 +    switch (target) {
 +    case HPR_ECG: k_event_post(&ecg_evt, start ? EVT_ECG_START : EVT_ECG_CANCEL); break;
 +    case HPR_GSR: k_event_post(&ecg_evt, start ? EVT_GSR_START : EVT_GSR_CANCEL); break;
@@ -362,12 +483,13 @@
 +    if (bt_conn_get_info(req->conn, &info) || info.state != BT_CONN_STATE_CONNECTED ||
 +        bt_conn_get_security(req->conn) < BT_SECURITY_L2) { return; }
 +    if (hpi_dfu_is_active() && opcode != CMD_STOP && opcode != CMD_STATUS) { result = R_DFU; }
++    else if (opcode == CMD_START && target >= HPR_TARGET_ACCEL) { result = R_UNSUPPORTED; }
 +    else if (opcode == CMD_START || opcode == CMD_CONTINUOUS) {
 +        uint32_t mask = (uint32_t)atomic_get(&remote_mask);
 +        uint8_t active_targets = 0;
 +        /* Spot checks remain exclusive. Continuous targets can coexist with
 +         * other continuous targets on this connection, never local spot/BP. */
-+        for (uint8_t i = 1; i <= 4; ++i) {
++        for (uint8_t i = 1; i <= HPR_LAST_TARGET; ++i) {
 +            if (active((uint8_t)atomic_get(&states[i]))) { active_targets |= BIT(i - 1); }
 +        }
 +        bool busy = hpr_start_busy(opcode == CMD_CONTINUOUS,
@@ -378,7 +500,8 @@
 +                hpi_research_continuous(target) != (opcode == CMD_CONTINUOUS)) { result = R_BUSY; }
 +        } else if (busy) { result = R_BUSY; }
 +        else {
-+            if (!owner) { owner = bt_conn_ref(req->conn); }
++            if (!owner) { owner = bt_conn_ref(req->conn); owner_targets = 0; }
++            owner_targets |= BIT(target - 1);
 +            atomic_or(&remote_mask, BIT(target - 1));
 +            if (opcode == CMD_CONTINUOUS) { atomic_or(&continuous_mask, BIT(target - 1)); }
 +            atomic_and(&stop_mask, ~BIT(target - 1));
@@ -402,8 +525,9 @@
 +{
 +    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
 +    struct request req;
++    int64_t next_status = 0;
 +    while (1) {
-+        if (!k_msgq_get(&hpr_commands, &req, K_MSEC(200))) {
++        if (!k_msgq_get(&hpr_commands, &req, K_MSEC(hpi_imu_active() ? 40 : 200))) {
 +            process(&req);
 +            bt_conn_unref(req.conn);
 +        }
@@ -412,13 +536,15 @@
 +            hpi_research_send(scalar.signal, &scalar.stamp, &scalar.value, 1);
 +        }
 +        bool disconnected = false;
++        bool status_due = k_uptime_get() >= next_status;
++        if (status_due) { next_status = k_uptime_get() + 200; }
 +        if (owner) {
 +            struct bt_conn_info info;
 +            disconnected = bt_conn_get_info(owner, &info) || info.state != BT_CONN_STATE_CONNECTED;
 +        }
-+        for (uint8_t target = 1; target <= 4; ++target) {
++        for (uint8_t target = 1; target <= HPR_LAST_TARGET; ++target) {
 +            if (!hpi_research_remote_owned(target)) {
-+                if (owner && !disconnected) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
++                if (owner && !disconnected && status_due && (target <= HPR_FINGER || (owner_targets & BIT(target - 1)))) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
 +                continue;
 +            }
 +            uint8_t state = (uint8_t)atomic_get(&states[target]);
@@ -430,12 +556,13 @@
 +            /* Keep Stop latched through controller startup sleeps/cleared events.
 +             * Do not release ownership on a timer: actual teardown acknowledges it. */
 +            if (hpi_research_stopping(target)) { post_request(target, false); }
-+            if (owner && !disconnected) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
++            if (owner && !disconnected && status_due) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
 +        }
++        hpi_imu_poll();
 +        if (owner && atomic_get(&remote_mask) == 0) {
 +            if (!disconnected) {
-+                for (uint8_t target = 1; target <= 4; ++target) {
-+                    publish_status(owner, 0, 0, target, R_ACCEPTED);
++                for (uint8_t target = 1; target <= HPR_LAST_TARGET; ++target) {
++                    if (target <= HPR_FINGER || (owner_targets & BIT(target - 1))) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
 +                }
 +            }
 +            bt_conn_unref(owner); owner = NULL;
@@ -456,7 +583,7 @@
 +    uint8_t payload[HPR_MAX_PACKET];
 +    uint16_t rate = hpr_rate_hz(ctx->signal);
 +    uint8_t flags = HPR_FLAG_TIME_ESTIMATED |
-+                    ((ctx->signal <= HPR_GSR || ctx->signal == HPR_TEMP) ? HPR_FLAG_SIGNED : 0);
++                    ((ctx->signal <= HPR_GSR || ctx->signal == HPR_TEMP || ctx->signal >= HPR_ACCEL_X) ? HPR_FLAG_SIGNED : 0);
 +    size_t offset = 0, max_count = (capacity - HPR_HEADER) / 4;
 +    while (offset < ctx->count) {
 +        size_t count = MIN(max_count, (size_t)ctx->count - offset);
@@ -487,7 +614,7 @@
 +SYS_INIT(research_init, APPLICATION, 80);
 --- /dev/null
 +++ b/app/src/hpi_research.h
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,23 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef HPI_RESEARCH_H
 +#define HPI_RESEARCH_H
@@ -508,6 +635,7 @@
 +bool hpi_research_stopping(uint8_t target);
 +bool hpi_research_remote_owned(uint8_t target);
 +bool hpi_research_local_allowed(uint8_t target);
++void hpi_research_request_stop(uint8_t target);
 +void hpi_research_finger_busy(bool busy);
 +#endif
 --- /dev/null
@@ -520,7 +648,7 @@
 +#include <stdint.h>
 +
 +/* Admission for a NEW target. An already owned target is handled idempotently
-+ * by the command handler. Bits 0..3 are ECG, BioZ, wrist and finger. */
++ * by the command handler. Bits 0..5 are ECG, BioZ, wrist, finger, accelerometer and gyro. */
 +static inline bool hpr_start_busy(bool continuous, bool different_owner,
 +                                  uint8_t remote, uint8_t continuous_targets,
 +                                  uint8_t active_targets, bool finger_busy)
@@ -532,7 +660,7 @@
 +#endif
 --- /dev/null
 +++ b/app/src/hpi_research_wire.h
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,99 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef HPI_RESEARCH_WIRE_H
 +#define HPI_RESEARCH_WIRE_H
@@ -554,7 +682,16 @@
 +#define HPR_WRIST_RED 9
 +#define HPR_WRIST_IR 10
 +#define HPR_FINGER_RED 11
-+#define HPR_LAST_SIGNAL HPR_FINGER_RED
++#define HPR_ACCEL_X 12
++#define HPR_ACCEL_Y 13
++#define HPR_ACCEL_Z 14
++#define HPR_GYRO_X 15
++#define HPR_GYRO_Y 16
++#define HPR_GYRO_Z 17
++#define HPR_LAST_SIGNAL HPR_GYRO_Z
++#define HPR_TARGET_ACCEL 5
++#define HPR_TARGET_GYRO 6
++#define HPR_LAST_TARGET HPR_TARGET_GYRO
 +#define HPR_IDLE 0
 +#define HPR_STARTING 1
 +#define HPR_WAITING 2
@@ -567,6 +704,7 @@
 +#define HPR_FLAG_SIGNED 2
 +/* Status flags only: firmware supports opcode 4 and concurrent continuous targets. */
 +#define HPR_CAP_CONTINUOUS 2
++#define HPR_CAP_IMU 4
 +
 +struct hpr_stamp {
 +    uint32_t first_index;
@@ -579,6 +717,8 @@
 +static inline uint16_t hpr_rate_hz(uint8_t signal)
 +{
 +    switch (signal) {
++    case HPR_ACCEL_X: case HPR_ACCEL_Y: case HPR_ACCEL_Z:
++    case HPR_GYRO_X: case HPR_GYRO_Y: case HPR_GYRO_Z: return 25;
 +    case HPR_ECG: return 128;
 +    case HPR_GSR: return 32;
 +    case HPR_WRIST:
@@ -1603,6 +1743,129 @@
 +response and values in each mode, compare indices across channels, then record
 +long enough to measure throughput and gaps. Also confirm original phone-app
 +streaming and measurement controls still behave correctly.
+--- a/drivers/sensor/bmi323hpi/bmi323_hpi.c
++++ b/drivers/sensor/bmi323hpi/bmi323_hpi.c
+@@ -5,6 +5,8 @@
+  */
+ 
+ #include "bmi323_hpi.h"
++#include "bmi323_raw.h"
++#include <errno.h>
+ // #include "bmi323_spi.h"
+ 
+ #include <zephyr/kernel.h>
+@@ -79,6 +81,8 @@
+ 	bool feature_any_motion_enabled;
+ 
+ 	uint32_t step_counter;
++	uint16_t research_gyro_saved;
++	bool research_gyro_enabled;
+ };
+ 
+ static int bmi323_write_step_counter_config(const struct device *dev, bool reset_counter);
+@@ -641,6 +645,64 @@
+ 	return ret;
+ }
+ 
++/* Research access is separate from the legacy ACCEL_X=step-count API. */
++int bmi323_hpi_research_start(const struct device *dev, bool gyro)
++{
++    if (!device_is_ready(dev)) { return -ENODEV; }
++    struct bosch_bmi323_data *data = dev->data;
++    k_mutex_lock(&data->lock, K_FOREVER);
++    uint16_t accel = 0;
++    int ret = bmi323_read_reg_16(dev, BMI3_REG_ACC_CONF, &accel);
++    /* Existing step engine configuration: normal, 50 Hz, +/-8g. Fail rather
++     * than return samples with an unexpected scale or change step settings. */
++    if (!ret && (accel & 0x707f) != 0x4027) { ret = -ENOTSUP; }
++    if (!ret && gyro && !data->research_gyro_enabled) {
++        ret = bmi323_read_reg_16(dev, BMI3_REG_GYR_CONF, &data->research_gyro_saved);
++        if (!ret) {
++            /* Bosch: mode=4, range=4 (+/-2000 dps), ODR=7 (50 Hz), avg=1. */
++            data->research_gyro_enabled = true; /* restore even if a write/readback fails */
++            ret = bmi323_write_reg_16(dev, BMI3_REG_GYR_CONF, 0x4047);
++            if (!ret) {
++                k_msleep(100);
++                uint16_t actual;
++                ret = bmi323_read_reg_16(dev, BMI3_REG_GYR_CONF, &actual);
++                if (!ret && (actual & 0x77ff) != 0x4047) { ret = -EIO; }
++            }
++            if (ret) {
++                int restore = bmi323_write_reg_16(dev, BMI3_REG_GYR_CONF, data->research_gyro_saved);
++                if (!restore) { data->research_gyro_enabled = false; }
++            }
++        }
++    }
++    k_mutex_unlock(&data->lock);
++    return ret;
++}
++
++int bmi323_hpi_research_stop_gyro(const struct device *dev)
++{
++    if (!device_is_ready(dev)) { return -ENODEV; }
++    struct bosch_bmi323_data *data = dev->data;
++    k_mutex_lock(&data->lock, K_FOREVER);
++    int ret = data->research_gyro_enabled ?
++        bmi323_write_reg_16(dev, BMI3_REG_GYR_CONF, data->research_gyro_saved) : 0;
++    if (!ret) { data->research_gyro_enabled = false; }
++    k_mutex_unlock(&data->lock);
++    return ret;
++}
++
++int bmi323_hpi_research_read(const struct device *dev, int32_t axes[6])
++{
++    if (!axes || !device_is_ready(dev)) { return -ENODEV; }
++    struct bosch_bmi323_data *data = dev->data;
++    const struct bmi323_config *config = dev->config;
++    uint8_t address = BMI3_REG_ACC_DATA_X, bytes[14];
++    k_mutex_lock(&data->lock, K_FOREVER);
++    int ret = i2c_write_read_dt(&config->bus, &address, 1, bytes, sizeof(bytes));
++    if (!ret) { bmi323_decode_raw(bytes, axes); }
++    k_mutex_unlock(&data->lock);
++    return ret;
++}
++
+ static int bosch_bmi323_driver_api_sample_fetch(const struct device *dev, enum sensor_channel chan)
+ {
+ 	struct bosch_bmi323_data *data = (struct bosch_bmi323_data *)dev->data;
+--- a/drivers/sensor/bmi323hpi/bmi323_hpi.h
++++ b/drivers/sensor/bmi323hpi/bmi323_hpi.h
+@@ -37,6 +37,7 @@
+  */
+ 
+ #pragma once
++#include <stdbool.h>
+ 
+ #include <zephyr/sys/util.h>
+ #include <zephyr/types.h>
+@@ -822,4 +823,9 @@
+     BMI323_HPI_ATTR_EN_ANY_MOTION = 0x03,
+     BMI323_HPI_ATTR_EN_NO_MOTION = 0x04,
+     BMI323_HPI_ATTR_RESET_STEP_COUNTER = 0x05,
+-};
+\ No newline at end of file
++};
++/* Signed raw sensor-register counts, no gravity or gyro-bias subtraction. */
++struct device;
++int bmi323_hpi_research_start(const struct device *dev, bool gyro);
++int bmi323_hpi_research_stop_gyro(const struct device *dev);
++int bmi323_hpi_research_read(const struct device *dev, int32_t axes[6]);
+--- /dev/null
++++ b/drivers/sensor/bmi323hpi/bmi323_raw.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: MIT */
++#pragma once
++#include <stdint.h>
++
++/* One I2C burst: two dummy bytes, then six signed LE 16-bit axis registers. */
++static inline void bmi323_decode_raw(const uint8_t bytes[14], int32_t axes[6])
++{
++    for (unsigned i = 0; i < 6; ++i) {
++        uint16_t word = (uint16_t)bytes[2 + i * 2] |
++                        ((uint16_t)bytes[3 + i * 2] << 8);
++        axes[i] = word & 0x8000 ? (int32_t)word - 65536 : word;
++    }
++}
 --- a/drivers/sensor/max30001/max30001.c
 +++ b/drivers/sensor/max30001/max30001.c
 @@ -508,12 +508,14 @@
@@ -1843,8 +2106,41 @@
 +    return 0;
 +}
 --- /dev/null
++++ b/tests/research_protocol/imu_test.c
+@@ -0,0 +1,30 @@
++#include <assert.h>
++#include <stdio.h>
++#include <string.h>
++#include "bmi323_raw.h"
++#include "hpi_research_wire.h"
++#include "hpi_research_policy.h"
++
++int main(void)
++{
++    const uint8_t frame[14] = {0xaa,0x55, 0x00,0x80, 0xff,0xff, 0xff,0x7f,
++                                          0x00,0x00, 0x00,0x10, 0x00,0xf0};
++    int32_t axes[6];
++    bmi323_decode_raw(frame, axes);
++    const int32_t expected[6] = {-32768,-1,32767,0,4096,-4096};
++    assert(memcmp(axes,expected,sizeof(axes)) == 0);
++    struct hpr_stamp stamp = {.first_index=99,.first_ms=5000};
++    uint8_t packet[40];
++    for (unsigned id=HPR_ACCEL_X;id<=HPR_GYRO_Z;++id) {
++        assert(hpr_rate_hz(id) == 25);
++        assert(hpr_encode(packet,sizeof(packet),id,3,42,&stamp,axes,0,5,25)==36);
++        assert(packet[1]==id && packet[2]==3 && packet[3]==5);
++        assert(packet[16]==0 && packet[17]==0x80 && packet[18]==0xff && packet[19]==0xff);
++    }
++    /* Six-target masks must allow IMU together with all physiological targets. */
++    for (unsigned mask=0; mask<64; ++mask) {
++        assert(!hpr_start_busy(true,false,mask,mask,mask,!!(mask&8)));
++    }
++    puts("PASS: IMU endian/sign decode, six signed wire IDs, rates and six-target admission");
++    return 0;
++}
+--- /dev/null
 +++ b/tests/research_protocol/test_protocol.py
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,93 @@
 +"""Run: python -m unittest discover -s fw/tests/research_protocol -p test_protocol.py -v"""
 +from pathlib import Path
 +import struct
@@ -1856,7 +2152,7 @@
 +
 +class ProtocolTests(unittest.TestCase):
 +    def packet(self, index=0, boot=42, signal=1, values=(-12, 1000), millis=1000):
-+        flags = 3 if signal in (1, 2, 6) else 1
++        flags = 3 if signal in (1, 2, 6) or signal >= 12 else 1
 +        return decode_data(struct.pack("<4BIII", 1, signal, flags, len(values), boot, index, millis) +
 +                           struct.pack("<" + ("i" if flags == 3 else "I") * len(values), *values))
 +
@@ -1921,7 +2217,15 @@
 +            with self.assertRaises(ValueError):
 +                self.packet(signal=signal, values=(1, 2))
 +        with self.assertRaises(ValueError):
-+            self.packet(signal=12, values=(1,))
++            self.packet(signal=18, values=(1,))
++
++    def test_imu_signed_axes_and_commands(self):
++        for signal in range(12, 18):
++            packet = self.packet(signal=signal, values=(-32768, 0, 32767))
++            self.assertEqual(packet['values'], [-32768, 0, 32767])
++            self.assertEqual(packet['nominal_hz'], 25)
++        self.assertEqual(command('continuous', 'accel', 2), bytes([1, 4, 5, 2]))
++        self.assertEqual(command('stop', 'gyro', 3), bytes([1, 2, 6, 3]))
 +
 +    def test_ppg_rejects_signed_flag(self):
 +        for signal in (9, 10, 11):
@@ -2022,7 +2326,7 @@
 +    sys.exit(main())
 --- /dev/null
 +++ b/tools/research_protocol.py
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,83 @@
 +"""Reference codec for the custom HPR1 service; this does not flash the watch."""
 +import struct
 +
@@ -2030,12 +2334,14 @@
 +CONTROL = "a17e0001-4d52-4f56-9100-524553454152"
 +STATUS = "a17e0002-4d52-4f56-9100-524553454152"
 +DATA = "a17e0003-4d52-4f56-9100-524553454152"
-+TARGETS = {"ecg": 1, "gsr": 2, "wrist_spo2": 3, "finger_spo2": 4}
++TARGETS = {"ecg": 1, "gsr": 2, "wrist_spo2": 3, "finger_spo2": 4, "accel": 5, "gyro": 6}
 +SIGNALS = {1: ("ecg", 128), 2: ("gsr", 32), 3: ("ppg_wrist", 25),
 +           4: ("ppg_finger", 100), 5: ("hr", None), 6: ("temp", None),
 +           7: ("spo2", None), 8: ("battery", None),
 +           9: ("ppg_wrist_red", 25), 10: ("ppg_wrist_ir", 25),
-+           11: ("ppg_finger_red", 100)}
++           11: ("ppg_finger_red", 100),
++           12: ("accel_x", 25), 13: ("accel_y", 25), 14: ("accel_z", 25),
++           15: ("gyro_x", 25), 16: ("gyro_y", 25), 17: ("gyro_z", 25)}
 +STATES = {0: "idle", 1: "starting", 2: "waiting_for_contact", 3: "measuring",
 +          4: "complete", 5: "cancelled", 6: "error", 7: "stopping"}
 +RESULTS = {0: "accepted", 1: "busy", 2: "invalid", 3: "not_owner",
@@ -2045,7 +2351,7 @@
 +def command(action, target=0, request_id=1):
 +    opcode = {"start": 1, "stop": 2, "status": 3, "continuous": 4}[action]
 +    target = TARGETS[target] if isinstance(target, str) else target
-+    if target not in range(5) or (opcode != 3 and target == 0):
++    if target not in range(7) or (opcode != 3 and target == 0):
 +        raise ValueError("Invalid measurement target")
 +    if request_id not in range(1, 256):
 +        raise ValueError("request_id must be 1..255; zero is reserved")
@@ -2057,11 +2363,11 @@
 +        raise ValueError("Unknown status format")
 +    version, rid, opcode, target, result, state, mask, flags, boot, uptime, failures = struct.unpack(
 +        "<8BIII", payload)
-+    if target > 4 or state not in STATES or result not in RESULTS:
++    if target > 6 or state not in STATES or result not in RESULTS:
 +        raise ValueError("Invalid status fields")
 +    return dict(version=version, request_id=rid, opcode=opcode, target=target,
 +                result=RESULTS[result], state=STATES[state], active_mask=mask,
-+                flags=flags, continuous_supported=bool(flags & 2), boot_id=boot, uptime_ms=uptime, tx_failures=failures)
++                flags=flags, continuous_supported=bool(flags & 2), imu_supported=bool(flags & 4), boot_id=boot, uptime_ms=uptime, tx_failures=failures)
 +
 +
 +def decode_data(payload):
@@ -2070,7 +2376,7 @@
 +    version, signal, flags, count, boot, index, millis = struct.unpack_from("<4BIII", payload)
 +    if version != 1 or signal not in SIGNALS or not count or len(payload) != 16 + 4 * count:
 +        raise ValueError("Unknown packet format or invalid length")
-+    signed = signal in (1, 2, 6)
++    signed = signal in (1, 2, 6) or signal >= 12
 +    if bool(flags & 2) != signed or not flags & 1 or flags & ~3:
 +        raise ValueError("Unexpected flags")
 +    if SIGNALS[signal][1] is None and count != 1:

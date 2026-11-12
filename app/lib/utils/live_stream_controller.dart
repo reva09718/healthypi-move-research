@@ -133,8 +133,9 @@ class LiveStreamController extends ChangeNotifier {
     for (final signal in _wanted) {
       if (signal.researchRequired && !transport.hasResearch) {
         errors[signal] =
-            'This channel needs the custom 3.1.1-ppg firmware. '
-            'Reconnect after updating the watch.';
+            signal.isImu
+                ? 'This channel needs firmware 3.1.4-imu. Reconnect after updating the watch.'
+                : 'This channel needs the custom 3.1.1-ppg firmware. Reconnect after updating the watch.';
         continue;
       }
       final route =

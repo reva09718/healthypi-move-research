@@ -9,6 +9,7 @@ import 'live_stream_controller_test.dart' show FakeLiveTransport;
 class FakeControlTransport extends FakeLiveTransport
     implements ResearchControlTransport {
   bool supportsContinuous = true;
+  bool supportsImu = false;
   bool acknowledge = true;
   int mask = 0, result = 0, boot = 42;
   final commands = <List<int>>[];
@@ -27,7 +28,7 @@ class FakeControlTransport extends FakeLiveTransport
       result,
       state,
       mask,
-      supportsContinuous ? 3 : 1,
+      (supportsContinuous ? 3 : 1) | (supportsImu ? 4 : 0),
     ]);
     ByteData.sublistView(bytes).setUint32(8, boot, Endian.little);
     return bytes;

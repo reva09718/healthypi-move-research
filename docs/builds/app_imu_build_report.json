@@ -1,0 +1,18 @@
+{
+  "app_version": "3.0.12+100",
+  "application_id": "com.protocentral.move.research",
+  "required_imu_firmware": "3.1.4-imu",
+  "release_build": "passed",
+  "targeted_tests_passed": 42,
+  "dart_analysis": "passed",
+  "apk_signature_alignment_crc_identity": "passed",
+  "packaged_native_plugin_count": 9,
+  "certificate_sha256": "b5a7eaa7cc4288cc0d574c4b9eb1caf00ef2aec7ccd92fc1edd2115b492e0dec",
+  "certificate_matches_previous_research_app": true,
+  "hardware_tested": false,
+  "file": {
+    "name": "HealthyPi_Move_IMU_3.0.12.apk",
+    "bytes": 62927763,
+    "sha256": "725f03b0f15c1dc1a3f903463a47603df953ab72c64d89a082d5cb63122be046"
+  }
+}

@@ -28,8 +28,8 @@ class ResearchPacket {
     if (version != 1 || count == 0 || bytes.length != 16 + count * 4) {
       throw const FormatException('Invalid research packet header or length');
     }
-    if (signal < 1 || signal > 11) return null;
-    final signed = signal == 1 || signal == 2 || signal == 6;
+    if (signal < 1 || signal > 17) return null;
+    final signed = signal == 1 || signal == 2 || signal == 6 || signal >= 12;
     if ((flags & ~3) != 0 ||
         (flags & 1) == 0 ||
         ((flags & 2) != 0) != signed ||

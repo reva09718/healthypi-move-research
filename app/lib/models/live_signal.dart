@@ -5,7 +5,21 @@ import 'package:flutter/material.dart';
 import '../globals.dart';
 import '../theme/hpi_colors.dart';
 
-enum LiveSignal { ecg, wristGreen, wristRed, wristIr, fingerIr, fingerRed, gsr }
+enum LiveSignal {
+  ecg,
+  wristGreen,
+  wristRed,
+  wristIr,
+  fingerIr,
+  fingerRed,
+  gsr,
+  accelX,
+  accelY,
+  accelZ,
+  gyroX,
+  gyroY,
+  gyroZ,
+}
 
 extension LiveSignalInfo on LiveSignal {
   String get label => switch (this) {
@@ -16,6 +30,12 @@ extension LiveSignalInfo on LiveSignal {
     LiveSignal.fingerIr => 'Finger IR',
     LiveSignal.fingerRed => 'Finger red',
     LiveSignal.gsr => 'GSR',
+    LiveSignal.accelX => 'Accel X',
+    LiveSignal.accelY => 'Accel Y',
+    LiveSignal.accelZ => 'Accel Z',
+    LiveSignal.gyroX => 'Gyro X',
+    LiveSignal.gyroY => 'Gyro Y',
+    LiveSignal.gyroZ => 'Gyro Z',
   };
 
   int get researchId => switch (this) {
@@ -26,6 +46,12 @@ extension LiveSignalInfo on LiveSignal {
     LiveSignal.wristRed => 9,
     LiveSignal.wristIr => 10,
     LiveSignal.fingerRed => 11,
+    LiveSignal.accelX => 12,
+    LiveSignal.accelY => 13,
+    LiveSignal.accelZ => 14,
+    LiveSignal.gyroX => 15,
+    LiveSignal.gyroY => 16,
+    LiveSignal.gyroZ => 17,
   };
 
   int get rate => switch (this) {
@@ -35,8 +61,34 @@ extension LiveSignalInfo on LiveSignal {
     _ => 25,
   };
 
-  bool get isPpg => this != LiveSignal.ecg && this != LiveSignal.gsr;
+  bool get isImu => index >= LiveSignal.accelX.index;
+  bool get isAccel =>
+      index >= LiveSignal.accelX.index && index <= LiveSignal.accelZ.index;
+  bool get isPrimaryChoice =>
+      !isImu || this == LiveSignal.accelX || this == LiveSignal.gyroX;
+  String get displayLabel =>
+      isImu ? (isAccel ? 'Accelerometer' : 'Gyroscope') : label;
+  String get unit =>
+      isAccel
+          ? 'g'
+          : isImu
+          ? '°/s'
+          : 'raw';
+  double displayValue(double raw) =>
+      isAccel
+          ? raw / 4096
+          : isImu
+          ? raw * 2000 / 32768
+          : raw;
+  List<LiveSignal> get axes =>
+      isAccel
+          ? const [LiveSignal.accelX, LiveSignal.accelY, LiveSignal.accelZ]
+          : isImu
+          ? const [LiveSignal.gyroX, LiveSignal.gyroY, LiveSignal.gyroZ]
+          : [this];
+  bool get isPpg => !isImu && this != LiveSignal.ecg && this != LiveSignal.gsr;
   bool get researchRequired =>
+      isImu ||
       this == LiveSignal.wristRed ||
       this == LiveSignal.wristIr ||
       this == LiveSignal.fingerRed;
@@ -49,6 +101,9 @@ extension LiveSignalInfo on LiveSignal {
     LiveSignal.wristRed || LiveSignal.fingerRed => HpiColors.bpSys,
     LiveSignal.wristIr => HpiColors.stress,
     LiveSignal.fingerIr => HpiColors.spo2,
+    LiveSignal.accelX || LiveSignal.gyroX => Colors.redAccent,
+    LiveSignal.accelY || LiveSignal.gyroY => Colors.greenAccent,
+    LiveSignal.accelZ || LiveSignal.gyroZ => Colors.lightBlueAccent,
   };
 
   String get legacyService =>
@@ -76,6 +131,13 @@ extension LiveSignalInfo on LiveSignal {
   }
 
   String get waitingHint => switch (this) {
+    LiveSignal.accelX ||
+    LiveSignal.accelY ||
+    LiveSignal.accelZ ||
+    LiveSignal.gyroX ||
+    LiveSignal.gyroY ||
+    LiveSignal.gyroZ =>
+      'Use Sensors → Start accelerometer or gyroscope. Firmware 3.1.4-imu is required.',
     LiveSignal.ecg => 'Start ECG on the watch and touch the electrodes.',
     LiveSignal.gsr => 'Start an EDA / GSR measurement on the watch.',
     LiveSignal.fingerIr || LiveSignal.fingerRed =>

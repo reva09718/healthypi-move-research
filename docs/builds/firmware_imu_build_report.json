@@ -1,0 +1,63 @@
+{
+  "firmware_version": "3.1.4-imu",
+  "mcuboot_version": "3.1.4+0",
+  "target": "healthypi_move/nrf5340/cpuapp",
+  "ncs": "3.4.0",
+  "target_build": "passed",
+  "ota_manifest_crc_and_image_equality": "passed",
+  "signed_images": {
+    "app.signed.bin": {
+      "signature": "verified",
+      "version": [
+        3,
+        1,
+        4,
+        0
+      ]
+    },
+    "ipc_radio.bin": {
+      "signature": "verified",
+      "version": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "app_signed_bytes": 787992,
+  "app_static_ram_bytes": 446648,
+  "app_ram_region_bytes": 450560,
+  "python_protocol_tests": 11,
+  "host_c_checks": [
+    "wire format",
+    "control admission",
+    "finger contact",
+    "IMU endian/signed decoding"
+  ],
+  "signal_ids": {
+    "12": "accel_x",
+    "13": "accel_y",
+    "14": "accel_z",
+    "15": "gyro_x",
+    "16": "gyro_y",
+    "17": "gyro_z"
+  },
+  "new_targets": {
+    "5": "accelerometer",
+    "6": "gyroscope"
+  },
+  "nominal_snapshot_rate_hz": 25,
+  "sensor_configuration": {
+    "accelerometer": "existing +/-8g 50Hz normal",
+    "gyroscope": "+/-2000 dps 50Hz normal; restored on Stop"
+  },
+  "hardware_tested": false,
+  "long_duration_tested": false,
+  "installed_watch_key_compatibility_verified": false,
+  "file": {
+    "name": "HealthyPi_Move_3.1.4_IMU_OTA.zip",
+    "bytes": 941011,
+    "sha256": "578e3dcc10d77c3b81e49f32799c2da9a7dead566794ea4441276e504cf44587"
+  }
+}

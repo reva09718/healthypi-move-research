@@ -37,6 +37,7 @@
  */
 
 #pragma once
+#include <stdbool.h>
 
 #include <zephyr/sys/util.h>
 #include <zephyr/types.h>
@@ -823,3 +824,8 @@ enum bmi323_hpi_attribute
     BMI323_HPI_ATTR_EN_NO_MOTION = 0x04,
     BMI323_HPI_ATTR_RESET_STEP_COUNTER = 0x05,
 };
+/* Signed raw sensor-register counts, no gravity or gyro-bias subtraction. */
+struct device;
+int bmi323_hpi_research_start(const struct device *dev, bool gyro);
+int bmi323_hpi_research_stop_gyro(const struct device *dev);
+int bmi323_hpi_research_read(const struct device *dev, int32_t axes[6]);

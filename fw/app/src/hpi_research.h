@@ -18,5 +18,6 @@ bool hpi_research_continuous(uint8_t target);
 bool hpi_research_stopping(uint8_t target);
 bool hpi_research_remote_owned(uint8_t target);
 bool hpi_research_local_allowed(uint8_t target);
+void hpi_research_request_stop(uint8_t target);
 void hpi_research_finger_busy(bool busy);
 #endif

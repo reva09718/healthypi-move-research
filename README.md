@@ -10,6 +10,21 @@ commits, licenses and the exact changed files are recorded below and in
 features have been built and checked with automated tests; they have not yet
 been validated as a complete system on a physical watch and phone.
 
+## IMU live release
+
+Use app **3.0.12+100** with firmware **3.1.4-imu** for accelerometer and
+gyroscope X/Y/Z streaming. Live has three-axis graphs, numerical g / degree-per-
+second readings and separate Start/Stop for both motion groups. Start all can
+run all six sensor groups. The finger-contact and Android startup fixes are
+included. See [IMU use, protocol, sampling and limits](docs/IMU_LIVE.md).
+
+The register snapshot stream is nominal 25 Hz, subsampled from 50 Hz sensor
+operation; it is not a lossless FIFO recorder. Raw signed counts are retained,
+with display-only unit conversion. Physical watch readings and long-duration
+simultaneous acquisition remain unverified. All 42 targeted app tests, 11 Python
+protocol tests and four host C checks passed, along with both target builds and
+package verification. Older reports below are retained as versioned history.
+
 ## Finger contact fix
 
 Firmware **3.1.3-fingerfix** replaces 3.1.2-continuous and works with the same

@@ -49,7 +49,7 @@ void main() {
     );
     final truncated = packet().sublist(0, 24);
     expect(() => ResearchPacket.decode(truncated), throwsFormatException);
-    expect(ResearchPacket.decode(packet(signal: 12)), isNull);
+    expect(ResearchPacket.decode(packet(signal: 18)), isNull);
   });
   test('per-channel continuity handles gaps, duplicates, wrap and reboot', () {
     final tracker = ResearchContinuity();

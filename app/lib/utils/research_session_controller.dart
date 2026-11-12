@@ -14,15 +14,18 @@ abstract interface class ResearchControlTransport {
   Future<Uint8List> readResearchStatus();
 }
 
-enum ResearchTarget { ecg, gsr, wrist, finger }
+enum ResearchTarget { ecg, gsr, wrist, finger, accel, gyro }
 
 extension ResearchTargetInfo on ResearchTarget {
   int get id => index + 1;
+  bool get isImu => index >= ResearchTarget.accel.index;
   String get label => switch (this) {
     ResearchTarget.ecg => 'ECG',
     ResearchTarget.gsr => 'GSR',
     ResearchTarget.wrist => 'Wrist PPGs',
     ResearchTarget.finger => 'Finger PPGs',
+    ResearchTarget.accel => 'Accelerometer',
+    ResearchTarget.gyro => 'Gyroscope',
   };
 }
 
@@ -30,10 +33,10 @@ class ResearchStatus {
   ResearchStatus(Uint8List bytes) {
     if (bytes.length != 20 ||
         bytes[0] != 1 ||
-        bytes[3] > 4 ||
+        bytes[3] > 6 ||
         bytes[4] > 5 ||
         bytes[5] > 7 ||
-        bytes[6] > 15) {
+        bytes[6] > 63) {
       throw const FormatException('Invalid sensor status');
     }
     request = bytes[1];
@@ -43,6 +46,7 @@ class ResearchStatus {
     state = bytes[5];
     mask = bytes[6];
     continuousSupported = (bytes[7] & 2) != 0;
+    imuSupported = (bytes[7] & 4) != 0;
     bootId = ByteData.sublistView(bytes).getUint32(8, Endian.little);
     txFailures = ByteData.sublistView(bytes).getUint32(16, Endian.little);
   }
@@ -54,7 +58,7 @@ class ResearchStatus {
       mask,
       bootId,
       txFailures;
-  late final bool continuousSupported;
+  late final bool continuousSupported, imuSupported;
 }
 
 /// Commands are acknowledged by the watch, separately from sensor/contact state.
@@ -65,7 +69,9 @@ class ResearchSessionController extends ChangeNotifier {
   final states = <ResearchTarget, int>{};
   final _possiblyOwned = <ResearchTarget>{};
   int activeMask = 0;
-  bool ready = false, supported = false, busy = false;
+  bool ready = false, supported = false, busy = false, imuSupported = false;
+  Iterable<ResearchTarget> get availableTargets =>
+      ResearchTarget.values.where((t) => !t.isImu || imuSupported);
   String? error;
   int txFailures = 0;
   int? _bootId;
@@ -82,7 +88,7 @@ class ResearchSessionController extends ChangeNotifier {
       active(target) || _possiblyOwned.contains(target);
   String stateLabel(ResearchTarget target) => switch (states[target] ?? 0) {
     1 => 'Starting',
-    2 => 'Waiting for contact',
+    2 => target.isImu ? 'Waiting for data' : 'Waiting for contact',
     3 => 'Streaming',
     4 => 'Completed',
     5 => 'Stopped',
@@ -111,6 +117,7 @@ class ResearchSessionController extends ChangeNotifier {
       }
       _bootId = status.bootId;
       supported = status.continuousSupported;
+      imuSupported = status.imuSupported;
       activeMask = status.mask;
       txFailures = status.txFailures;
       if (status.target != 0) {
@@ -223,6 +230,10 @@ class ResearchSessionController extends ChangeNotifier {
       final failures = <String>[];
       for (final target in targets) {
         if (start && _shuttingDown) break;
+        if (start && target.isImu && !imuSupported) {
+          failures.add('${target.label}: install firmware 3.1.4-imu');
+          continue;
+        }
         if (!start && !active(target) && !_possiblyOwned.contains(target)) {
           continue;
         }

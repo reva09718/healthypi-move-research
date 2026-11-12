@@ -19,7 +19,16 @@
 #define HPR_WRIST_RED 9
 #define HPR_WRIST_IR 10
 #define HPR_FINGER_RED 11
-#define HPR_LAST_SIGNAL HPR_FINGER_RED
+#define HPR_ACCEL_X 12
+#define HPR_ACCEL_Y 13
+#define HPR_ACCEL_Z 14
+#define HPR_GYRO_X 15
+#define HPR_GYRO_Y 16
+#define HPR_GYRO_Z 17
+#define HPR_LAST_SIGNAL HPR_GYRO_Z
+#define HPR_TARGET_ACCEL 5
+#define HPR_TARGET_GYRO 6
+#define HPR_LAST_TARGET HPR_TARGET_GYRO
 #define HPR_IDLE 0
 #define HPR_STARTING 1
 #define HPR_WAITING 2
@@ -32,6 +41,7 @@
 #define HPR_FLAG_SIGNED 2
 /* Status flags only: firmware supports opcode 4 and concurrent continuous targets. */
 #define HPR_CAP_CONTINUOUS 2
+#define HPR_CAP_IMU 4
 
 struct hpr_stamp {
     uint32_t first_index;
@@ -44,6 +54,8 @@ struct hpr_stamp {
 static inline uint16_t hpr_rate_hz(uint8_t signal)
 {
     switch (signal) {
+    case HPR_ACCEL_X: case HPR_ACCEL_Y: case HPR_ACCEL_Z:
+    case HPR_GYRO_X: case HPR_GYRO_Y: case HPR_GYRO_Z: return 25;
     case HPR_ECG: return 128;
     case HPR_GSR: return 32;
     case HPR_WRIST:

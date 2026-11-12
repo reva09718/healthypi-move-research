@@ -5,12 +5,14 @@ SERVICE = "a17e0000-4d52-4f56-9100-524553454152"
 CONTROL = "a17e0001-4d52-4f56-9100-524553454152"
 STATUS = "a17e0002-4d52-4f56-9100-524553454152"
 DATA = "a17e0003-4d52-4f56-9100-524553454152"
-TARGETS = {"ecg": 1, "gsr": 2, "wrist_spo2": 3, "finger_spo2": 4}
+TARGETS = {"ecg": 1, "gsr": 2, "wrist_spo2": 3, "finger_spo2": 4, "accel": 5, "gyro": 6}
 SIGNALS = {1: ("ecg", 128), 2: ("gsr", 32), 3: ("ppg_wrist", 25),
            4: ("ppg_finger", 100), 5: ("hr", None), 6: ("temp", None),
            7: ("spo2", None), 8: ("battery", None),
            9: ("ppg_wrist_red", 25), 10: ("ppg_wrist_ir", 25),
-           11: ("ppg_finger_red", 100)}
+           11: ("ppg_finger_red", 100),
+           12: ("accel_x", 25), 13: ("accel_y", 25), 14: ("accel_z", 25),
+           15: ("gyro_x", 25), 16: ("gyro_y", 25), 17: ("gyro_z", 25)}
 STATES = {0: "idle", 1: "starting", 2: "waiting_for_contact", 3: "measuring",
           4: "complete", 5: "cancelled", 6: "error", 7: "stopping"}
 RESULTS = {0: "accepted", 1: "busy", 2: "invalid", 3: "not_owner",
@@ -20,7 +22,7 @@ RESULTS = {0: "accepted", 1: "busy", 2: "invalid", 3: "not_owner",
 def command(action, target=0, request_id=1):
     opcode = {"start": 1, "stop": 2, "status": 3, "continuous": 4}[action]
     target = TARGETS[target] if isinstance(target, str) else target
-    if target not in range(5) or (opcode != 3 and target == 0):
+    if target not in range(7) or (opcode != 3 and target == 0):
         raise ValueError("Invalid measurement target")
     if request_id not in range(1, 256):
         raise ValueError("request_id must be 1..255; zero is reserved")
@@ -32,11 +34,11 @@ def decode_status(payload):
         raise ValueError("Unknown status format")
     version, rid, opcode, target, result, state, mask, flags, boot, uptime, failures = struct.unpack(
         "<8BIII", payload)
-    if target > 4 or state not in STATES or result not in RESULTS:
+    if target > 6 or state not in STATES or result not in RESULTS:
         raise ValueError("Invalid status fields")
     return dict(version=version, request_id=rid, opcode=opcode, target=target,
                 result=RESULTS[result], state=STATES[state], active_mask=mask,
-                flags=flags, continuous_supported=bool(flags & 2), boot_id=boot, uptime_ms=uptime, tx_failures=failures)
+                flags=flags, continuous_supported=bool(flags & 2), imu_supported=bool(flags & 4), boot_id=boot, uptime_ms=uptime, tx_failures=failures)
 
 
 def decode_data(payload):
@@ -45,7 +47,7 @@ def decode_data(payload):
     version, signal, flags, count, boot, index, millis = struct.unpack_from("<4BIII", payload)
     if version != 1 or signal not in SIGNALS or not count or len(payload) != 16 + 4 * count:
         raise ValueError("Unknown packet format or invalid length")
-    signed = signal in (1, 2, 6)
+    signed = signal in (1, 2, 6) or signal >= 12
     if bool(flags & 2) != signed or not flags & 1 or flags & ~3:
         raise ValueError("Unexpected flags")
     if SIGNALS[signal][1] is None and count != 1:

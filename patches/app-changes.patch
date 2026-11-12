@@ -225,8 +225,8 @@
 +    if (version != 1 || count == 0 || bytes.length != 16 + count * 4) {
 +      throw const FormatException('Invalid research packet header or length');
 +    }
-+    if (signal < 1 || signal > 11) return null;
-+    final signed = signal == 1 || signal == 2 || signal == 6;
++    if (signal < 1 || signal > 17) return null;
++    final signed = signal == 1 || signal == 2 || signal == 6 || signal >= 12;
 +    if ((flags & ~3) != 0 ||
 +        (flags & 1) == 0 ||
 +        ((flags & 2) != 0) != signed ||
@@ -338,7 +338,7 @@
 +}
 --- /dev/null
 +++ b/lib/models/live_signal.dart
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,149 @@
 +import 'dart:typed_data';
 +
 +import 'package:flutter/material.dart';
@@ -346,7 +346,21 @@
 +import '../globals.dart';
 +import '../theme/hpi_colors.dart';
 +
-+enum LiveSignal { ecg, wristGreen, wristRed, wristIr, fingerIr, fingerRed, gsr }
++enum LiveSignal {
++  ecg,
++  wristGreen,
++  wristRed,
++  wristIr,
++  fingerIr,
++  fingerRed,
++  gsr,
++  accelX,
++  accelY,
++  accelZ,
++  gyroX,
++  gyroY,
++  gyroZ,
++}
 +
 +extension LiveSignalInfo on LiveSignal {
 +  String get label => switch (this) {
@@ -357,6 +371,12 @@
 +    LiveSignal.fingerIr => 'Finger IR',
 +    LiveSignal.fingerRed => 'Finger red',
 +    LiveSignal.gsr => 'GSR',
++    LiveSignal.accelX => 'Accel X',
++    LiveSignal.accelY => 'Accel Y',
++    LiveSignal.accelZ => 'Accel Z',
++    LiveSignal.gyroX => 'Gyro X',
++    LiveSignal.gyroY => 'Gyro Y',
++    LiveSignal.gyroZ => 'Gyro Z',
 +  };
 +
 +  int get researchId => switch (this) {
@@ -367,6 +387,12 @@
 +    LiveSignal.wristRed => 9,
 +    LiveSignal.wristIr => 10,
 +    LiveSignal.fingerRed => 11,
++    LiveSignal.accelX => 12,
++    LiveSignal.accelY => 13,
++    LiveSignal.accelZ => 14,
++    LiveSignal.gyroX => 15,
++    LiveSignal.gyroY => 16,
++    LiveSignal.gyroZ => 17,
 +  };
 +
 +  int get rate => switch (this) {
@@ -376,8 +402,34 @@
 +    _ => 25,
 +  };
 +
-+  bool get isPpg => this != LiveSignal.ecg && this != LiveSignal.gsr;
++  bool get isImu => index >= LiveSignal.accelX.index;
++  bool get isAccel =>
++      index >= LiveSignal.accelX.index && index <= LiveSignal.accelZ.index;
++  bool get isPrimaryChoice =>
++      !isImu || this == LiveSignal.accelX || this == LiveSignal.gyroX;
++  String get displayLabel =>
++      isImu ? (isAccel ? 'Accelerometer' : 'Gyroscope') : label;
++  String get unit =>
++      isAccel
++          ? 'g'
++          : isImu
++          ? '°/s'
++          : 'raw';
++  double displayValue(double raw) =>
++      isAccel
++          ? raw / 4096
++          : isImu
++          ? raw * 2000 / 32768
++          : raw;
++  List<LiveSignal> get axes =>
++      isAccel
++          ? const [LiveSignal.accelX, LiveSignal.accelY, LiveSignal.accelZ]
++          : isImu
++          ? const [LiveSignal.gyroX, LiveSignal.gyroY, LiveSignal.gyroZ]
++          : [this];
++  bool get isPpg => !isImu && this != LiveSignal.ecg && this != LiveSignal.gsr;
 +  bool get researchRequired =>
++      isImu ||
 +      this == LiveSignal.wristRed ||
 +      this == LiveSignal.wristIr ||
 +      this == LiveSignal.fingerRed;
@@ -390,6 +442,9 @@
 +    LiveSignal.wristRed || LiveSignal.fingerRed => HpiColors.bpSys,
 +    LiveSignal.wristIr => HpiColors.stress,
 +    LiveSignal.fingerIr => HpiColors.spo2,
++    LiveSignal.accelX || LiveSignal.gyroX => Colors.redAccent,
++    LiveSignal.accelY || LiveSignal.gyroY => Colors.greenAccent,
++    LiveSignal.accelZ || LiveSignal.gyroZ => Colors.lightBlueAccent,
 +  };
 +
 +  String get legacyService =>
@@ -417,6 +472,13 @@
 +  }
 +
 +  String get waitingHint => switch (this) {
++    LiveSignal.accelX ||
++    LiveSignal.accelY ||
++    LiveSignal.accelZ ||
++    LiveSignal.gyroX ||
++    LiveSignal.gyroY ||
++    LiveSignal.gyroZ =>
++      'Use Sensors → Start accelerometer or gyroscope. Firmware 3.1.4-imu is required.',
 +    LiveSignal.ecg => 'Start ECG on the watch and touch the electrodes.',
 +    LiveSignal.gsr => 'Start an EDA / GSR measurement on the watch.',
 +    LiveSignal.fingerIr || LiveSignal.fingerRed =>
@@ -428,7 +490,7 @@
 +}
 --- a/lib/screens/scr_live.dart
 +++ b/lib/screens/scr_live.dart
-@@ -2,345 +2,502 @@
+@@ -2,345 +2,509 @@
  // SPDX-License-Identifier: MIT
  
  import 'dart:async';
@@ -444,6 +506,7 @@
  import '../theme/hpi_text.dart';
 -import '../ui/adaptive/breakpoints.dart';
  import '../ui/charts/hpi_sweep_waveform.dart';
++import '../ui/charts/hpi_imu_waveform.dart';
  import '../ui/components/hpi_components.dart';
  import '../utils/connection_manager.dart';
  import '../utils/device_manager.dart';
@@ -805,7 +868,7 @@
 +              onPressed:
 +                  enabled
 +                      ? () => controls.setTargets(
-+                        ResearchTarget.values,
++                        controls.availableTargets,
 +                        start: true,
 +                      )
 +                      : null,
@@ -868,7 +931,10 @@
 +                              ),
 +                              TextButton(
 +                                onPressed:
-+                                    enabled && !controls.active(target)
++                                    enabled &&
++                                            (!target.isImu ||
++                                                controls.imuSupported) &&
++                                            !controls.active(target)
 +                                        ? () => controls.setTargets([
 +                                          target,
 +                                        ], start: true)
@@ -889,6 +955,7 @@
 +                        const SizedBox(height: 12),
 +                        Text(
 +                          'Wrist PPGs: green, red and IR. Finger PPGs: red and IR. '
++                          'Accelerometer and gyroscope each show X/Y/Z. '
 +                          'Sensors can run together. Contact is required for usable signals.',
 +                          style: HpiText.supporting,
 +                        ),
@@ -1091,11 +1158,13 @@
 +              scrollDirection: Axis.horizontal,
 +              child: Row(
 +                children: [
-+                  for (final signal in LiveSignal.values)
++                  for (final signal in LiveSignal.values.where(
++                    (s) => s.isPrimaryChoice,
++                  ))
 +                    Padding(
 +                      padding: const EdgeInsets.only(right: 6),
 +                      child: ChoiceChip(
-+                        label: Text(signal.label),
++                        label: Text(signal.displayLabel),
 +                        selected: _primary == signal,
 +                        selectedColor: signal.color.withValues(alpha: 0.22),
 +                        onSelected: (_) => _select(signal),
@@ -1119,7 +1188,7 @@
 +                      _compare = value;
 +                      if (_secondary == _primary) {
 +                        _secondary = LiveSignal.values.firstWhere(
-+                          (s) => s != _primary,
++                          (s) => s.isPrimaryChoice && s != _primary,
 +                        );
 +                      }
 +                    });
@@ -1136,11 +1205,11 @@
 +                      underline: const SizedBox.shrink(),
 +                      items: [
 +                        for (final signal in LiveSignal.values.where(
-+                          (s) => s != _primary,
++                          (s) => s.isPrimaryChoice && s != _primary,
 +                        ))
 +                          DropdownMenuItem(
 +                            value: signal,
-+                            child: Text(signal.label),
++                            child: Text(signal.displayLabel),
 +                          ),
 +                      ],
 +                      onChanged: (signal) {
@@ -1192,7 +1261,7 @@
              ],
            ],
          ),
-@@ -348,90 +505,82 @@
+@@ -348,90 +512,118 @@
      );
    }
  
@@ -1260,15 +1329,20 @@
 +    final missing = _feed?.missingCounts[signal] ?? 0;
 +    final useResearch = _transport?.hasResearch == true;
 +    final target =
-+        signal == LiveSignal.ecg
++        signal.isImu
++            ? (signal.isAccel ? ResearchTarget.accel : ResearchTarget.gyro)
++            : signal == LiveSignal.ecg
 +            ? ResearchTarget.ecg
 +            : signal == LiveSignal.gsr
 +            ? ResearchTarget.gsr
 +            : signal.isFinger
 +            ? ResearchTarget.finger
 +            : ResearchTarget.wrist;
++    final imuMissing = signal.isImu && _controls?.imuSupported != true;
 +    final waitingHint =
-+        _controls == null
++        imuMissing
++            ? 'Install firmware 3.1.4-imu for accelerometer and gyro streaming.'
++            : _controls == null
 +            ? signal.waitingHint
 +            : '${_controls!.stateLabel(target)}. Use Sensors to Start/Stop, '
 +                'and maintain contact. Waiting for recent samples.';
@@ -1287,7 +1361,7 @@
 -              Text(s.caption, style: HpiText.mono.copyWith(fontSize: 9.5)),
 +              Expanded(
 +                child: Text(
-+                  signal.isPpg ? '${signal.label} PPG' : signal.label,
++                  signal.isPpg ? '${signal.label} PPG' : signal.displayLabel,
 +                  style: HpiText.sectionLabel.copyWith(color: signal.color),
 +                ),
 +              ),
@@ -1296,13 +1370,28 @@
 +                style: HpiText.mono.copyWith(fontSize: 10),
 +              ),
              ],
-+          ),
+           ),
 +          const SizedBox(height: 6),
 +          Text(
 +            '$count samples · ${useResearch ? '$missing missing after baseline' : 'loss count unavailable'}'
-+            '${_latest[signal] == null ? '' : ' · latest ${_latest[signal]!.toStringAsFixed(0)}'}',
++            '${signal.isImu || _latest[signal] == null ? '' : ' · latest ${_latest[signal]!.toStringAsFixed(0)}'}',
 +            style: HpiText.supporting,
-           ),
++          ),
++          if (signal.isImu)
++            Row(
++              children: [
++                for (final axis in signal.axes)
++                  Expanded(
++                    child: Text(
++                      '${axis.label.split(' ').last}: ${_latest[axis] == null ? '—' : axis.displayValue(_latest[axis]!).toStringAsFixed(3)} ${axis.unit}',
++                      style: HpiText.mono.copyWith(
++                        color: axis.color,
++                        fontSize: 10,
++                      ),
++                    ),
++                  ),
++              ],
++            ),
            const SizedBox(height: 8),
            Expanded(
              child: Stack(
@@ -1310,7 +1399,23 @@
                  Positioned.fill(
 -                    child: HpiSweepWaveform(buffer: buffer, color: s.color)),
 -                if (idle)
-+                  child: HpiSweepWaveform(buffer: buffer, color: signal.color),
++                  child:
++                      signal.isImu
++                          ? HpiImuWaveform(
++                            buffers: [
++                              for (final axis in signal.axes) _buffer(axis),
++                            ],
++                            colors: [
++                              for (final axis in signal.axes) axis.color,
++                            ],
++                            scale: signal.isAccel ? 1 / 4096 : 2000 / 32768,
++                            minimumRange: signal.isAccel ? 1.25 : 5,
++                            unit: signal.unit,
++                          )
++                          : HpiSweepWaveform(
++                            buffer: buffer,
++                            color: signal.color,
++                          ),
 +                ),
 +                if (idle || error != null)
                    Positioned.fill(
@@ -1341,7 +1446,7 @@
                          ),
                        ),
                      ),
-@@ -444,91 +593,28 @@
+@@ -444,91 +636,28 @@
      );
    }
  
@@ -1552,6 +1657,114 @@
 +    },
 +  );
 +}
+--- /dev/null
++++ b/lib/ui/charts/hpi_imu_waveform.dart
+@@ -0,0 +1,105 @@
++import 'dart:math' as math;
++import 'package:flutter/material.dart';
++import 'hpi_sweep_waveform.dart';
++
++/// Three axes share one symmetric Y scale; no gravity/bias subtraction.
++class HpiImuWaveform extends StatelessWidget {
++  const HpiImuWaveform({
++    super.key,
++    required this.buffers,
++    required this.colors,
++    required this.scale,
++    required this.minimumRange,
++    required this.unit,
++  });
++  final List<SweepBuffer> buffers;
++  final List<Color> colors;
++  final double scale, minimumRange;
++  final String unit;
++
++  @override
++  Widget build(BuildContext context) => AnimatedBuilder(
++    animation: Listenable.merge(buffers),
++    builder:
++        (context, child) => CustomPaint(
++          size: Size.infinite,
++          painter: _ImuPainter(buffers, colors, scale, minimumRange, unit),
++        ),
++  );
++}
++
++class _ImuPainter extends CustomPainter {
++  _ImuPainter(
++    this.buffers,
++    this.colors,
++    this.scale,
++    this.minimumRange,
++    this.unit,
++  );
++  final List<SweepBuffer> buffers;
++  final List<Color> colors;
++  final double scale, minimumRange;
++  final String unit;
++  @override
++  void paint(Canvas canvas, Size size) {
++    double extent = minimumRange;
++    for (final buffer in buffers) {
++      for (final value in buffer.samples) {
++        if (value != null) extent = math.max(extent, value.abs() * scale * 1.1);
++      }
++    }
++    final grid =
++        Paint()
++          ..color = Colors.white.withValues(alpha: 0.12)
++          ..strokeWidth = 1;
++    for (int row = 0; row <= 4; row++) {
++      final y = size.height * row / 4;
++      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
++    }
++    canvas.save();
++    canvas.clipRect(Offset.zero & size);
++    for (int axis = 0; axis < buffers.length; axis++) {
++      final buffer = buffers[axis];
++      final trace =
++          Paint()
++            ..color = colors[axis]
++            ..strokeWidth = 1.8
++            ..style = PaintingStyle.stroke;
++      Path? path;
++      for (int i = 0; i < buffer.capacity; i++) {
++        final value = buffer.samples[i];
++        if (value == null) {
++          if (path != null) canvas.drawPath(path, trace);
++          path = null;
++          continue;
++        }
++        final x = size.width * i / (buffer.capacity - 1);
++        final y = size.height * (0.5 - value * scale / (2 * extent));
++        if (path == null) {
++          path = Path()..moveTo(x, y);
++        } else {
++          path.lineTo(x, y);
++        }
++      }
++      if (path != null) canvas.drawPath(path, trace);
++    }
++    canvas.restore();
++    for (final entry in [
++      (extent, 0.0),
++      (0.0, size.height / 2),
++      (-extent, size.height - 12),
++    ]) {
++      final label = TextPainter(
++        textDirection: TextDirection.ltr,
++        text: TextSpan(
++          text: '${entry.$1.toStringAsFixed(2)} $unit',
++          style: const TextStyle(color: Colors.white60, fontSize: 9),
++        ),
++      )..layout();
++      label.paint(canvas, Offset(2, entry.$2));
++    }
++  }
++
++  @override
++  bool shouldRepaint(covariant _ImuPainter oldDelegate) => true;
++}
 --- a/lib/ui/charts/hpi_sweep_waveform.dart
 +++ b/lib/ui/charts/hpi_sweep_waveform.dart
 @@ -3,6 +3,7 @@
@@ -1671,7 +1884,7 @@
          if (!connected && !_intentional && _state == LinkState.connected) {
 --- /dev/null
 +++ b/lib/utils/live_stream_controller.dart
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,243 @@
 +import 'dart:async';
 +
 +import 'package:flutter/foundation.dart';
@@ -1807,8 +2020,9 @@
 +    for (final signal in _wanted) {
 +      if (signal.researchRequired && !transport.hasResearch) {
 +        errors[signal] =
-+            'This channel needs the custom 3.1.1-ppg firmware. '
-+            'Reconnect after updating the watch.';
++            signal.isImu
++                ? 'This channel needs firmware 3.1.4-imu. Reconnect after updating the watch.'
++                : 'This channel needs the custom 3.1.1-ppg firmware. Reconnect after updating the watch.';
 +        continue;
 +      }
 +      final route =
@@ -1916,7 +2130,7 @@
 +}
 --- /dev/null
 +++ b/lib/utils/research_session_controller.dart
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,303 @@
 +import 'dart:async';
 +
 +import 'package:flutter/foundation.dart';
@@ -1933,15 +2147,18 @@
 +  Future<Uint8List> readResearchStatus();
 +}
 +
-+enum ResearchTarget { ecg, gsr, wrist, finger }
++enum ResearchTarget { ecg, gsr, wrist, finger, accel, gyro }
 +
 +extension ResearchTargetInfo on ResearchTarget {
 +  int get id => index + 1;
++  bool get isImu => index >= ResearchTarget.accel.index;
 +  String get label => switch (this) {
 +    ResearchTarget.ecg => 'ECG',
 +    ResearchTarget.gsr => 'GSR',
 +    ResearchTarget.wrist => 'Wrist PPGs',
 +    ResearchTarget.finger => 'Finger PPGs',
++    ResearchTarget.accel => 'Accelerometer',
++    ResearchTarget.gyro => 'Gyroscope',
 +  };
 +}
 +
@@ -1949,10 +2166,10 @@
 +  ResearchStatus(Uint8List bytes) {
 +    if (bytes.length != 20 ||
 +        bytes[0] != 1 ||
-+        bytes[3] > 4 ||
++        bytes[3] > 6 ||
 +        bytes[4] > 5 ||
 +        bytes[5] > 7 ||
-+        bytes[6] > 15) {
++        bytes[6] > 63) {
 +      throw const FormatException('Invalid sensor status');
 +    }
 +    request = bytes[1];
@@ -1962,6 +2179,7 @@
 +    state = bytes[5];
 +    mask = bytes[6];
 +    continuousSupported = (bytes[7] & 2) != 0;
++    imuSupported = (bytes[7] & 4) != 0;
 +    bootId = ByteData.sublistView(bytes).getUint32(8, Endian.little);
 +    txFailures = ByteData.sublistView(bytes).getUint32(16, Endian.little);
 +  }
@@ -1973,7 +2191,7 @@
 +      mask,
 +      bootId,
 +      txFailures;
-+  late final bool continuousSupported;
++  late final bool continuousSupported, imuSupported;
 +}
 +
 +/// Commands are acknowledged by the watch, separately from sensor/contact state.
@@ -1984,7 +2202,9 @@
 +  final states = <ResearchTarget, int>{};
 +  final _possiblyOwned = <ResearchTarget>{};
 +  int activeMask = 0;
-+  bool ready = false, supported = false, busy = false;
++  bool ready = false, supported = false, busy = false, imuSupported = false;
++  Iterable<ResearchTarget> get availableTargets =>
++      ResearchTarget.values.where((t) => !t.isImu || imuSupported);
 +  String? error;
 +  int txFailures = 0;
 +  int? _bootId;
@@ -2001,7 +2221,7 @@
 +      active(target) || _possiblyOwned.contains(target);
 +  String stateLabel(ResearchTarget target) => switch (states[target] ?? 0) {
 +    1 => 'Starting',
-+    2 => 'Waiting for contact',
++    2 => target.isImu ? 'Waiting for data' : 'Waiting for contact',
 +    3 => 'Streaming',
 +    4 => 'Completed',
 +    5 => 'Stopped',
@@ -2030,6 +2250,7 @@
 +      }
 +      _bootId = status.bootId;
 +      supported = status.continuousSupported;
++      imuSupported = status.imuSupported;
 +      activeMask = status.mask;
 +      txFailures = status.txFailures;
 +      if (status.target != 0) {
@@ -2142,6 +2363,10 @@
 +      final failures = <String>[];
 +      for (final target in targets) {
 +        if (start && _shuttingDown) break;
++        if (start && target.isImu && !imuSupported) {
++          failures.add('${target.label}: install firmware 3.1.4-imu');
++          continue;
++        }
 +        if (!start && !active(target) && !_possiblyOwned.contains(target)) {
 +          continue;
 +        }
@@ -2278,7 +2503,7 @@
  description: "HealthyPi Move"
  publish_to: 'none'
 -version: 3.0.8+96
-+version: 3.0.11+99
++version: 3.0.12+100
  
  environment:
    sdk: ^3.7.0
@@ -2423,6 +2648,177 @@
 +        () => Future<void>.delayed(const Duration(milliseconds: 20)),
 +      );
 +      await tester.pump();
++    },
++  );
++}
+--- /dev/null
++++ b/test/imu_screen_test.dart
+@@ -0,0 +1,72 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:move/models/device_info.dart';
++import 'package:move/screens/scr_live.dart';
++import 'package:move/theme/hpi_theme.dart';
++import 'package:move/ui/charts/hpi_imu_waveform.dart';
++import 'research_session_controller_test.dart' show FakeControlTransport;
++import 'research_packet_test.dart' show packet;
++
++void main() {
++  for (final size in [const Size(360, 640), const Size(800, 1000)]) {
++    testWidgets('three-axis motion graphs and six controls fit $size', (
++      tester,
++    ) async {
++      tester.view.physicalSize = size;
++      tester.view.devicePixelRatio = 1;
++      addTearDown(tester.view.resetPhysicalSize);
++      addTearDown(tester.view.resetDevicePixelRatio);
++      final transport = FakeControlTransport()..supportsImu = true;
++      await tester.pumpWidget(
++        MaterialApp(
++          theme: HpiTheme.dark(),
++          home: Scaffold(
++            body: ScrLive(
++              transport: transport,
++              initialDevice: DeviceInfo(
++                macAddress: 'watch',
++                deviceName: 'Test watch',
++                firstPaired: DateTime(2026),
++              ),
++            ),
++          ),
++        ),
++      );
++      await tester.pumpAndSettle();
++      await tester.ensureVisible(find.text('Accelerometer').first);
++      await tester.tap(find.text('Accelerometer').first);
++      await tester.pumpAndSettle();
++      for (int i = 12; i <= 14; i++) {
++        transport.emit(
++          packet(signal: i, flags: 3, samples: [i == 13 ? -4096 : 4096]),
++        );
++      }
++      await tester.pump(const Duration(seconds: 1));
++      expect(find.byType(HpiImuWaveform), findsOneWidget);
++      expect(find.text('X: 1.000 g'), findsOneWidget);
++      expect(find.text('Y: -1.000 g'), findsOneWidget);
++      final chart = tester.widget<HpiImuWaveform>(find.byType(HpiImuWaveform));
++      expect(chart.buffers.length, 3);
++      expect(chart.colors.toSet().length, 3);
++      await tester.tap(find.byType(Switch));
++      await tester.pumpAndSettle();
++      await tester.tap(
++        find.byWidgetPredicate((w) => w is DropdownButton).first,
++      );
++      await tester.pumpAndSettle();
++      await tester.tap(find.text('Gyroscope').last);
++      await tester.pumpAndSettle();
++      expect(find.byType(HpiImuWaveform), findsNWidgets(2));
++      expect(tester.takeException(), isNull);
++      await tester.tap(find.text('Start all'));
++      await tester.pumpAndSettle();
++      expect(transport.mask, 63);
++      await tester.pumpWidget(const SizedBox());
++      await tester.runAsync(
++        () => Future<void>.delayed(const Duration(milliseconds: 50)),
++      );
++      await tester.pump();
++      expect(transport.mask, 0);
++    });
++  }
++}
+--- /dev/null
++++ b/test/imu_test.dart
+@@ -0,0 +1,93 @@
++import 'package:flutter_test/flutter_test.dart';
++import 'package:move/ble/research_packet.dart';
++import 'package:move/models/live_signal.dart';
++import 'package:move/utils/live_stream_controller.dart';
++import 'package:move/utils/research_session_controller.dart';
++import 'live_stream_controller_test.dart' show FakeLiveTransport;
++import 'research_session_controller_test.dart' show FakeControlTransport;
++import 'research_packet_test.dart' show packet;
++
++void main() {
++  test(
++    'all six IMU axes decode signed raw values and convert only for display',
++    () {
++      for (final signal in LiveSignal.values.where((s) => s.isImu)) {
++        final decoded =
++            ResearchPacket.decode(
++              packet(
++                signal: signal.researchId,
++                flags: 3,
++                samples: [-32768, -4096, 0, 4096, 32767],
++              ),
++            )!;
++        expect(decoded.values, [-32768, -4096, 0, 4096, 32767]);
++        expect(signal.rate, 25);
++        expect(signal.axes.length, 3);
++        expect(
++          () => ResearchPacket.decode(packet(signal: signal.researchId)),
++          throwsFormatException,
++        );
++      }
++      expect(LiveSignal.accelX.displayValue(4096), 1.0);
++      expect(LiveSignal.accelZ.displayValue(-32768), -8.0);
++      expect(LiveSignal.gyroX.displayValue(-32768), -2000.0);
++      expect(LiveSignal.gyroY.displayValue(16384), 1000.0);
++    },
++  );
++  test(
++    'interleaved IMU and PPG packets are routed to independent axes',
++    () async {
++      final transport = FakeLiveTransport();
++      final received = <LiveSignal, List<double>>{};
++      final feed = LiveStreamController(
++        transport,
++        onSamples: (s, v, _) => received[s] = v,
++      );
++      await feed.select(LiveSignal.values.toSet());
++      for (final signal in LiveSignal.values.where((s) => s.isImu)) {
++        transport.emit(
++          packet(
++            signal: signal.researchId,
++            flags: 3,
++            samples: [signal.researchId],
++          ),
++        );
++      }
++      transport.emit(packet(signal: 11, samples: [100]));
++      expect(received.length, 7);
++      expect(received[LiveSignal.accelX], [12]);
++      expect(received[LiveSignal.gyroZ], [17]);
++      expect(received[LiveSignal.fingerRed], [100]);
++      expect(transport.enabled.length, 1);
++      feed.dispose();
++    },
++  );
++  test(
++    'older firmware refuses IMU starts without sending an unsupported command',
++    () async {
++      final transport = FakeControlTransport();
++      final controls = ResearchSessionController(transport);
++      await controls.setTargets([ResearchTarget.accel], start: true);
++      expect(transport.commands, isEmpty);
++      expect(controls.error, contains('3.1.4-imu'));
++      expect(controls.availableTargets.length, 4);
++      await controls.shutdown();
++      controls.dispose();
++    },
++  );
++  test(
++    'IMU capable firmware accepts six groups and stops gyro independently',
++    () async {
++      final transport = FakeControlTransport()..supportsImu = true;
++      final controls = ResearchSessionController(transport);
++      await controls.setTargets(ResearchTarget.values, start: true);
++      expect(controls.activeMask, 63);
++      expect(transport.commands.length, 6);
++      await controls.setTargets([ResearchTarget.gyro], start: false);
++      expect(controls.activeMask, 31);
++      await controls.shutdown();
++      controls.dispose();
++      expect(transport.mask, 0);
 +    },
 +  );
 +}
@@ -2740,7 +3136,7 @@
 +    );
 +    final truncated = packet().sublist(0, 24);
 +    expect(() => ResearchPacket.decode(truncated), throwsFormatException);
-+    expect(ResearchPacket.decode(packet(signal: 12)), isNull);
++    expect(ResearchPacket.decode(packet(signal: 18)), isNull);
 +  });
 +  test('per-channel continuity handles gaps, duplicates, wrap and reboot', () {
 +    final tracker = ResearchContinuity();
@@ -2773,7 +3169,7 @@
 +}
 --- /dev/null
 +++ b/test/research_session_controller_test.dart
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,167 @@
 +import 'dart:typed_data';
 +
 +import 'package:flutter_test/flutter_test.dart';
@@ -2785,6 +3181,7 @@
 +class FakeControlTransport extends FakeLiveTransport
 +    implements ResearchControlTransport {
 +  bool supportsContinuous = true;
++  bool supportsImu = false;
 +  bool acknowledge = true;
 +  int mask = 0, result = 0, boot = 42;
 +  final commands = <List<int>>[];
@@ -2803,7 +3200,7 @@
 +      result,
 +      state,
 +      mask,
-+      supportsContinuous ? 3 : 1,
++      (supportsContinuous ? 3 : 1) | (supportsImu ? 4 : 0),
 +    ]);
 +    ByteData.sublistView(bytes).setUint32(8, boot, Endian.little);
 +    return bytes;

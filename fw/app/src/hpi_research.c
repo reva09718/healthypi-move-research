@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <string.h>
 #include "hpi_research.h"
+#include "hpi_imu.h"
 #include "hpi_research_policy.h"
 #include "hpi_evt.h"
 #include "hpi_dfu.h"
@@ -19,7 +20,7 @@
 
 enum { CMD_START = 1, CMD_STOP = 2, CMD_STATUS = 3, CMD_CONTINUOUS = 4 };
 enum { R_ACCEPTED, R_BUSY, R_INVALID, R_NOT_OWNER, R_UNSUPPORTED, R_DFU };
-static atomic_t states[5];
+static atomic_t states[HPR_LAST_TARGET + 1];
 static atomic_t indices[HPR_LAST_SIGNAL + 1];
 static atomic_t remote_mask;
 static atomic_t continuous_mask;
@@ -31,7 +32,8 @@ static struct k_spinlock status_lock;
 static uint8_t status_bytes[HPR_STATUS_SIZE];
 /* Only the control thread dereferences/changes owner. */
 static struct bt_conn *owner;
-static int64_t pending_since[5];
+static uint8_t owner_targets;
+static int64_t pending_since[HPR_LAST_TARGET + 1];
 struct request { struct bt_conn *conn; uint8_t bytes[4]; };
 K_MSGQ_DEFINE(hpr_commands, sizeof(struct request), 4, sizeof(void *));
 struct scalar_packet { struct hpr_stamp stamp; int32_t value; uint8_t signal; };
@@ -45,19 +47,19 @@ static bool active(uint8_t state)
 
 bool hpi_research_continuous(uint8_t target)
 {
-    return target >= 1 && target <= 4 &&
+    return target >= 1 && target <= HPR_LAST_TARGET &&
            (atomic_get(&continuous_mask) & BIT(target - 1));
 }
 
 bool hpi_research_stopping(uint8_t target)
 {
-    return target >= 1 && target <= 4 &&
+    return target >= 1 && target <= HPR_LAST_TARGET &&
            (atomic_get(&stop_mask) & BIT(target - 1));
 }
 
 void hpi_research_state(uint8_t target, uint8_t state)
 {
-    if (target < 1 || target > 4) { return; }
+    if (target < 1 || target > HPR_LAST_TARGET) { return; }
     uint8_t old = (uint8_t)atomic_get(&states[target]);
     if (state == HPR_IDLE && old >= HPR_COMPLETE && old <= HPR_ERROR) { return; }
     if (state == HPR_IDLE && active(old)) {
@@ -75,7 +77,7 @@ void hpi_research_state(uint8_t target, uint8_t state)
 
 bool hpi_research_remote_owned(uint8_t target)
 {
-    return target >= 1 && target <= 4 &&
+    return target >= 1 && target <= HPR_LAST_TARGET &&
            (atomic_get(&remote_mask) & BIT(target - 1));
 }
 
@@ -83,6 +85,13 @@ bool hpi_research_local_allowed(uint8_t target)
 {
     ARG_UNUSED(target);
     return atomic_get(&remote_mask) == 0;
+}
+
+void hpi_research_request_stop(uint8_t target)
+{
+    if (target < 1 || target > HPR_LAST_TARGET) { return; }
+    atomic_or(&stop_mask, BIT(target - 1));
+    atomic_set(&states[target], HPR_STOPPING);
 }
 
 void hpi_research_finger_busy(bool busy) { atomic_set(&finger_busy, busy); }
@@ -126,7 +135,7 @@ static ssize_t write_control(struct bt_conn *conn, const struct bt_gatt_attr *at
     if (len != 4) { return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN); }
     const uint8_t *b = buf;
     if (b[0] != HPR_VERSION || b[1] < CMD_START || b[1] > CMD_CONTINUOUS ||
-        b[2] > 4 || b[3] == 0 || (b[1] != CMD_STATUS && b[2] == 0)) {
+        b[2] > HPR_LAST_TARGET || b[3] == 0 || (b[1] != CMD_STATUS && b[2] == 0)) {
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
     struct request req = {.conn = bt_conn_ref(conn)};
@@ -155,10 +164,10 @@ static void publish_status(struct bt_conn *conn, uint8_t request_id,
 {
     uint8_t b[HPR_STATUS_SIZE] = {HPR_VERSION, request_id, opcode, target, result};
     b[5] = target ? (uint8_t)atomic_get(&states[target]) : HPR_IDLE;
-    for (uint8_t i = 1; i <= 4; ++i) {
+    for (uint8_t i = 1; i <= HPR_LAST_TARGET; ++i) {
         if (active((uint8_t)atomic_get(&states[i]))) { b[6] |= BIT(i - 1); }
     }
-    b[7] = HPR_FLAG_TIME_ESTIMATED | HPR_CAP_CONTINUOUS;
+    b[7] = HPR_FLAG_TIME_ESTIMATED | HPR_CAP_CONTINUOUS | HPR_CAP_IMU;
     hpr_put32(b + 8, boot_id);
     hpr_put32(b + 12, k_uptime_get_32());
     hpr_put32(b + 16, (uint32_t)atomic_get(&tx_failures));
@@ -175,6 +184,7 @@ static void post_request(uint8_t target, bool start)
 {
     /* Continuous ECG/BioZ is reconciled by its owning SMF thread. */
     if (target <= HPR_GSR && hpi_research_continuous(target)) { return; }
+    if (target >= HPR_TARGET_ACCEL) { hpi_imu_request(target, start); return; }
     switch (target) {
     case HPR_ECG: k_event_post(&ecg_evt, start ? EVT_ECG_START : EVT_ECG_CANCEL); break;
     case HPR_GSR: k_event_post(&ecg_evt, start ? EVT_GSR_START : EVT_GSR_CANCEL); break;
@@ -190,12 +200,13 @@ static void process(struct request *req)
     if (bt_conn_get_info(req->conn, &info) || info.state != BT_CONN_STATE_CONNECTED ||
         bt_conn_get_security(req->conn) < BT_SECURITY_L2) { return; }
     if (hpi_dfu_is_active() && opcode != CMD_STOP && opcode != CMD_STATUS) { result = R_DFU; }
+    else if (opcode == CMD_START && target >= HPR_TARGET_ACCEL) { result = R_UNSUPPORTED; }
     else if (opcode == CMD_START || opcode == CMD_CONTINUOUS) {
         uint32_t mask = (uint32_t)atomic_get(&remote_mask);
         uint8_t active_targets = 0;
         /* Spot checks remain exclusive. Continuous targets can coexist with
          * other continuous targets on this connection, never local spot/BP. */
-        for (uint8_t i = 1; i <= 4; ++i) {
+        for (uint8_t i = 1; i <= HPR_LAST_TARGET; ++i) {
             if (active((uint8_t)atomic_get(&states[i]))) { active_targets |= BIT(i - 1); }
         }
         bool busy = hpr_start_busy(opcode == CMD_CONTINUOUS,
@@ -206,7 +217,8 @@ static void process(struct request *req)
                 hpi_research_continuous(target) != (opcode == CMD_CONTINUOUS)) { result = R_BUSY; }
         } else if (busy) { result = R_BUSY; }
         else {
-            if (!owner) { owner = bt_conn_ref(req->conn); }
+            if (!owner) { owner = bt_conn_ref(req->conn); owner_targets = 0; }
+            owner_targets |= BIT(target - 1);
             atomic_or(&remote_mask, BIT(target - 1));
             if (opcode == CMD_CONTINUOUS) { atomic_or(&continuous_mask, BIT(target - 1)); }
             atomic_and(&stop_mask, ~BIT(target - 1));
@@ -230,8 +242,9 @@ static void control_thread(void *a, void *b, void *c)
 {
     ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
     struct request req;
+    int64_t next_status = 0;
     while (1) {
-        if (!k_msgq_get(&hpr_commands, &req, K_MSEC(200))) {
+        if (!k_msgq_get(&hpr_commands, &req, K_MSEC(hpi_imu_active() ? 40 : 200))) {
             process(&req);
             bt_conn_unref(req.conn);
         }
@@ -240,13 +253,15 @@ static void control_thread(void *a, void *b, void *c)
             hpi_research_send(scalar.signal, &scalar.stamp, &scalar.value, 1);
         }
         bool disconnected = false;
+        bool status_due = k_uptime_get() >= next_status;
+        if (status_due) { next_status = k_uptime_get() + 200; }
         if (owner) {
             struct bt_conn_info info;
             disconnected = bt_conn_get_info(owner, &info) || info.state != BT_CONN_STATE_CONNECTED;
         }
-        for (uint8_t target = 1; target <= 4; ++target) {
+        for (uint8_t target = 1; target <= HPR_LAST_TARGET; ++target) {
             if (!hpi_research_remote_owned(target)) {
-                if (owner && !disconnected) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
+                if (owner && !disconnected && status_due && (target <= HPR_FINGER || (owner_targets & BIT(target - 1)))) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
                 continue;
             }
             uint8_t state = (uint8_t)atomic_get(&states[target]);
@@ -258,12 +273,13 @@ static void control_thread(void *a, void *b, void *c)
             /* Keep Stop latched through controller startup sleeps/cleared events.
              * Do not release ownership on a timer: actual teardown acknowledges it. */
             if (hpi_research_stopping(target)) { post_request(target, false); }
-            if (owner && !disconnected) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
+            if (owner && !disconnected && status_due) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
         }
+        hpi_imu_poll();
         if (owner && atomic_get(&remote_mask) == 0) {
             if (!disconnected) {
-                for (uint8_t target = 1; target <= 4; ++target) {
-                    publish_status(owner, 0, 0, target, R_ACCEPTED);
+                for (uint8_t target = 1; target <= HPR_LAST_TARGET; ++target) {
+                    if (target <= HPR_FINGER || (owner_targets & BIT(target - 1))) { publish_status(owner, 0, 0, target, R_ACCEPTED); }
                 }
             }
             bt_conn_unref(owner); owner = NULL;
@@ -284,7 +300,7 @@ static void send_to(struct bt_conn *conn, void *user_data)
     uint8_t payload[HPR_MAX_PACKET];
     uint16_t rate = hpr_rate_hz(ctx->signal);
     uint8_t flags = HPR_FLAG_TIME_ESTIMATED |
-                    ((ctx->signal <= HPR_GSR || ctx->signal == HPR_TEMP) ? HPR_FLAG_SIGNED : 0);
+                    ((ctx->signal <= HPR_GSR || ctx->signal == HPR_TEMP || ctx->signal >= HPR_ACCEL_X) ? HPR_FLAG_SIGNED : 0);
     size_t offset = 0, max_count = (capacity - HPR_HEADER) / 4;
     while (offset < ctx->count) {
         size_t count = MIN(max_count, (size_t)ctx->count - offset);

@@ -5,6 +5,8 @@
  */
 
 #include "bmi323_hpi.h"
+#include "bmi323_raw.h"
+#include <errno.h>
 // #include "bmi323_spi.h"
 
 #include <zephyr/kernel.h>
@@ -79,6 +81,8 @@ struct bosch_bmi323_data
 	bool feature_any_motion_enabled;
 
 	uint32_t step_counter;
+	uint16_t research_gyro_saved;
+	bool research_gyro_enabled;
 };
 
 static int bmi323_write_step_counter_config(const struct device *dev, bool reset_counter);
@@ -639,6 +643,64 @@ static int bosch_bmi323_driver_api_trigger_set(const struct device *dev,
 	k_mutex_unlock(&data->lock);
 
 	return ret;
+}
+
+/* Research access is separate from the legacy ACCEL_X=step-count API. */
+int bmi323_hpi_research_start(const struct device *dev, bool gyro)
+{
+    if (!device_is_ready(dev)) { return -ENODEV; }
+    struct bosch_bmi323_data *data = dev->data;
+    k_mutex_lock(&data->lock, K_FOREVER);
+    uint16_t accel = 0;
+    int ret = bmi323_read_reg_16(dev, BMI3_REG_ACC_CONF, &accel);
+    /* Existing step engine configuration: normal, 50 Hz, +/-8g. Fail rather
+     * than return samples with an unexpected scale or change step settings. */
+    if (!ret && (accel & 0x707f) != 0x4027) { ret = -ENOTSUP; }
+    if (!ret && gyro && !data->research_gyro_enabled) {
+        ret = bmi323_read_reg_16(dev, BMI3_REG_GYR_CONF, &data->research_gyro_saved);
+        if (!ret) {
+            /* Bosch: mode=4, range=4 (+/-2000 dps), ODR=7 (50 Hz), avg=1. */
+            data->research_gyro_enabled = true; /* restore even if a write/readback fails */
+            ret = bmi323_write_reg_16(dev, BMI3_REG_GYR_CONF, 0x4047);
+            if (!ret) {
+                k_msleep(100);
+                uint16_t actual;
+                ret = bmi323_read_reg_16(dev, BMI3_REG_GYR_CONF, &actual);
+                if (!ret && (actual & 0x77ff) != 0x4047) { ret = -EIO; }
+            }
+            if (ret) {
+                int restore = bmi323_write_reg_16(dev, BMI3_REG_GYR_CONF, data->research_gyro_saved);
+                if (!restore) { data->research_gyro_enabled = false; }
+            }
+        }
+    }
+    k_mutex_unlock(&data->lock);
+    return ret;
+}
+
+int bmi323_hpi_research_stop_gyro(const struct device *dev)
+{
+    if (!device_is_ready(dev)) { return -ENODEV; }
+    struct bosch_bmi323_data *data = dev->data;
+    k_mutex_lock(&data->lock, K_FOREVER);
+    int ret = data->research_gyro_enabled ?
+        bmi323_write_reg_16(dev, BMI3_REG_GYR_CONF, data->research_gyro_saved) : 0;
+    if (!ret) { data->research_gyro_enabled = false; }
+    k_mutex_unlock(&data->lock);
+    return ret;
+}
+
+int bmi323_hpi_research_read(const struct device *dev, int32_t axes[6])
+{
+    if (!axes || !device_is_ready(dev)) { return -ENODEV; }
+    struct bosch_bmi323_data *data = dev->data;
+    const struct bmi323_config *config = dev->config;
+    uint8_t address = BMI3_REG_ACC_DATA_X, bytes[14];
+    k_mutex_lock(&data->lock, K_FOREVER);
+    int ret = i2c_write_read_dt(&config->bus, &address, 1, bytes, sizeof(bytes));
+    if (!ret) { bmi323_decode_raw(bytes, axes); }
+    k_mutex_unlock(&data->lock);
+    return ret;
 }
 
 static int bosch_bmi323_driver_api_sample_fetch(const struct device *dev, enum sensor_channel chan)

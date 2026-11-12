@@ -10,6 +10,7 @@ import '../models/live_signal.dart';
 import '../theme/hpi_colors.dart';
 import '../theme/hpi_text.dart';
 import '../ui/charts/hpi_sweep_waveform.dart';
+import '../ui/charts/hpi_imu_waveform.dart';
 import '../ui/components/hpi_components.dart';
 import '../utils/connection_manager.dart';
 import '../utils/device_manager.dart';
@@ -241,7 +242,7 @@ class _ScrLiveState extends State<ScrLive> {
               onPressed:
                   enabled
                       ? () => controls.setTargets(
-                        ResearchTarget.values,
+                        controls.availableTargets,
                         start: true,
                       )
                       : null,
@@ -304,7 +305,10 @@ class _ScrLiveState extends State<ScrLive> {
                               ),
                               TextButton(
                                 onPressed:
-                                    enabled && !controls.active(target)
+                                    enabled &&
+                                            (!target.isImu ||
+                                                controls.imuSupported) &&
+                                            !controls.active(target)
                                         ? () => controls.setTargets([
                                           target,
                                         ], start: true)
@@ -325,6 +329,7 @@ class _ScrLiveState extends State<ScrLive> {
                         const SizedBox(height: 12),
                         Text(
                           'Wrist PPGs: green, red and IR. Finger PPGs: red and IR. '
+                          'Accelerometer and gyroscope each show X/Y/Z. '
                           'Sensors can run together. Contact is required for usable signals.',
                           style: HpiText.supporting,
                         ),
@@ -413,11 +418,13 @@ class _ScrLiveState extends State<ScrLive> {
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  for (final signal in LiveSignal.values)
+                  for (final signal in LiveSignal.values.where(
+                    (s) => s.isPrimaryChoice,
+                  ))
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: ChoiceChip(
-                        label: Text(signal.label),
+                        label: Text(signal.displayLabel),
                         selected: _primary == signal,
                         selectedColor: signal.color.withValues(alpha: 0.22),
                         onSelected: (_) => _select(signal),
@@ -441,7 +448,7 @@ class _ScrLiveState extends State<ScrLive> {
                       _compare = value;
                       if (_secondary == _primary) {
                         _secondary = LiveSignal.values.firstWhere(
-                          (s) => s != _primary,
+                          (s) => s.isPrimaryChoice && s != _primary,
                         );
                       }
                     });
@@ -458,11 +465,11 @@ class _ScrLiveState extends State<ScrLive> {
                       underline: const SizedBox.shrink(),
                       items: [
                         for (final signal in LiveSignal.values.where(
-                          (s) => s != _primary,
+                          (s) => s.isPrimaryChoice && s != _primary,
                         ))
                           DropdownMenuItem(
                             value: signal,
-                            child: Text(signal.label),
+                            child: Text(signal.displayLabel),
                           ),
                       ],
                       onChanged: (signal) {
@@ -519,15 +526,20 @@ class _ScrLiveState extends State<ScrLive> {
     final missing = _feed?.missingCounts[signal] ?? 0;
     final useResearch = _transport?.hasResearch == true;
     final target =
-        signal == LiveSignal.ecg
+        signal.isImu
+            ? (signal.isAccel ? ResearchTarget.accel : ResearchTarget.gyro)
+            : signal == LiveSignal.ecg
             ? ResearchTarget.ecg
             : signal == LiveSignal.gsr
             ? ResearchTarget.gsr
             : signal.isFinger
             ? ResearchTarget.finger
             : ResearchTarget.wrist;
+    final imuMissing = signal.isImu && _controls?.imuSupported != true;
     final waitingHint =
-        _controls == null
+        imuMissing
+            ? 'Install firmware 3.1.4-imu for accelerometer and gyro streaming.'
+            : _controls == null
             ? signal.waitingHint
             : '${_controls!.stateLabel(target)}. Use Sensors to Start/Stop, '
                 'and maintain contact. Waiting for recent samples.';
@@ -541,7 +553,7 @@ class _ScrLiveState extends State<ScrLive> {
             children: [
               Expanded(
                 child: Text(
-                  signal.isPpg ? '${signal.label} PPG' : signal.label,
+                  signal.isPpg ? '${signal.label} PPG' : signal.displayLabel,
                   style: HpiText.sectionLabel.copyWith(color: signal.color),
                 ),
               ),
@@ -554,15 +566,46 @@ class _ScrLiveState extends State<ScrLive> {
           const SizedBox(height: 6),
           Text(
             '$count samples · ${useResearch ? '$missing missing after baseline' : 'loss count unavailable'}'
-            '${_latest[signal] == null ? '' : ' · latest ${_latest[signal]!.toStringAsFixed(0)}'}',
+            '${signal.isImu || _latest[signal] == null ? '' : ' · latest ${_latest[signal]!.toStringAsFixed(0)}'}',
             style: HpiText.supporting,
           ),
+          if (signal.isImu)
+            Row(
+              children: [
+                for (final axis in signal.axes)
+                  Expanded(
+                    child: Text(
+                      '${axis.label.split(' ').last}: ${_latest[axis] == null ? '—' : axis.displayValue(_latest[axis]!).toStringAsFixed(3)} ${axis.unit}',
+                      style: HpiText.mono.copyWith(
+                        color: axis.color,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           const SizedBox(height: 8),
           Expanded(
             child: Stack(
               children: [
                 Positioned.fill(
-                  child: HpiSweepWaveform(buffer: buffer, color: signal.color),
+                  child:
+                      signal.isImu
+                          ? HpiImuWaveform(
+                            buffers: [
+                              for (final axis in signal.axes) _buffer(axis),
+                            ],
+                            colors: [
+                              for (final axis in signal.axes) axis.color,
+                            ],
+                            scale: signal.isAccel ? 1 / 4096 : 2000 / 32768,
+                            minimumRange: signal.isAccel ? 1.25 : 5,
+                            unit: signal.unit,
+                          )
+                          : HpiSweepWaveform(
+                            buffer: buffer,
+                            color: signal.color,
+                          ),
                 ),
                 if (idle || error != null)
                   Positioned.fill(
