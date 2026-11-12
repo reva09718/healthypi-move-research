@@ -23,6 +23,25 @@ Configuration comes from `data/cloud_config.json` (`bucket`, `table`, `region`) 
 variables. AWS credentials come from the normal boto3 chain (`aws configure --profile hpi-laptop` and
 `AWS_PROFILE`). They are never stored in the repository.
 
+## Critical gap for the long-duration test (read this before Part E)
+
+Reva's commits on 2026-11-12 added firmware **3.1.2-continuous** and app **3.0.11+99**: the phone can
+start/stop continuous ECG, GSR/BioZ, wrist PPG and finger PPG (`fw/docs/CONTINUOUS_RESEARCH.md`).
+But storage and AWS upload live in the **laptop** recorder, and the two halves do not meet yet:
+
+| Device | Starts continuous sensors | Stores data / uploads to AWS |
+|---|---|---|
+| Phone app 3.0.11 | Yes (Start all / per-sensor) | **No** (live display only) |
+| Laptop `research_app.py` | **No** (old live endpoints; only finite watch spot measurements) | Yes (encrypted SQLite, hybrid AWS) |
+
+The watch accepts one BLE connection, and disconnecting cancels continuous targets, so the phone cannot
+start acquisition and then hand over to the laptop. **The 3-5 h stored recording (problem-statement
+item 8) needs the laptop recorder to speak the research protocol:** connect, subscribe to STATUS and
+DATA of service `a17e0000-...`, send `[1, 4, target, request_id]` for targets 1-4, decode with
+`fw/tools/research_protocol.py` (`decode_data`, `Continuity`), store via `research_storage.SessionStore`,
+and re-send Start after every reconnect. That is the next implementation task. Until it exists, Part E of
+`WALKTHROUGH.md` can only record finite spot measurements.
+
 ## Status (2026-11-12)
 
 - AWS account created on the **Free plan**: no charges, 100 USD credits, trial until May 2027. Never
@@ -32,8 +51,8 @@ variables. AWS credentials come from the normal boto3 chain (`aws configure --pr
   the `hpi-laptop` user with `UploaderPolicyArn` (Part B, step 6).
 - Then: key backup (Part C), short watch recordings incl. a 10-min hybrid run and `verify` (Part D),
   3-5 h recording x2 (Part E), real-AWS benchmark x3 (Part F), comparison and recommendation (Part G).
-- Not done and out of the AWS scope: laptop recorder on the new research service (wrist red/IR,
-  finger red), recording in the Flutter app, IMU streaming, root cause of the ~45 s disconnect.
+- Not done: laptop recorder on the research service (see the critical gap above), recording/storage in
+  the Flutter app, IMU streaming, hardware validation of 3.1.2-continuous, the ~45 s disconnect.
 
 ## Rules for credentials
 

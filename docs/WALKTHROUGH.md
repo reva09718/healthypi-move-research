@@ -9,7 +9,7 @@ All commands are PowerShell, run from the repository folder unless stated otherw
 | # | Problem-statement item | Status | Remaining |
 |---|---|---|---|
 | 1 | Study firmware, BLE protocol, Flutter app | Done: `docs/BLE_SPEC.md`, `fw/docs/RESEARCH_PPG.md`, `patches/` | - |
-| 2 | Start/Stop recording of all available sensors | **Partly.** Laptop recorder has Start/Stop for ECG, GSR, wrist/finger PPG, HR, temperature, SpO2, battery. | The laptop recorder still uses the original BLE endpoints, so it cannot record the new wrist red/IR and finger red channels. Sensors must be started on the watch. No IMU stream. The phone app has no recording. |
+| 2 | Start/Stop recording of all available sensors | **Partly.** Firmware 3.1.2-continuous + app 3.0.11: phone Start all/Stop all and per-sensor continuous control. Laptop recorder: Start/Stop of host capture with storage. | The phone does not store data; the laptop cannot start continuous mode or record wrist red/IR and finger red (see `docs/HANDOFF.md`, critical gap). No IMU stream. |
 | 3 | BLE communication, live visualisation, timestamped packets | Done: firmware research service (custom 3.1.1-ppg), app Live tab with all 5 PPG channels, laptop live plots, version-1 packet envelope with host timestamps | Physical phone + watch test still pending |
 | 4 | Secure local storage (CSV/SQLite) | Done on the laptop: DPAPI-encrypted SQLite and CSV export | Not in the phone app |
 | 5 | AWS cloud storage (S3, DynamoDB) | **Code done**: encrypted S3 chunks, DynamoDB index, hybrid upload while recording, resumable sync, verify, download | **Run on real AWS (Parts B-E below)** |
@@ -128,6 +128,11 @@ Before each recording: charge the watch, close the phone app **and turn off phon
    backlog uploads. `verify` should still give `"ok": true` with nothing missing.
 
 ## Part E - The 3-5 hour continuous recording
+
+> **Blocked until the laptop recorder can start continuous acquisition** (see the critical gap in
+> `docs/HANDOFF.md`). With the current recorder the watch only runs finite spot measurements, so a
+> multi-hour run will mostly record connection time, not signals. Do Parts A-D and F now; run Part E
+> after that recorder update.
 
 **Prepare the laptop:**
 
